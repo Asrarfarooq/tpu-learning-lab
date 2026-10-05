@@ -1,0 +1,113 @@
+{
+  "title": "Module 0: Foundations \u2014 Tensors, Autograd, JAX Purity & Spot TPU Setup",
+  "description": "Zero-to-one engineering foundations: Tensor memory layouts, TPU HBM/VMEM hierarchy, PyTorch Autograd tape vs. JAX functional transformations, and Spot Cloud TPU VM provisioning.",
+  "units": [
+    {
+      "id": "unit_01",
+      "title": "0.1 Tensors, Memory Layouts & TPU Hardware Hierarchy",
+      "duration": "20m",
+      "file": "unit_01_tpu_and_tensor_basics.md",
+      "lab_file": "labs/lab_01_tensors_and_devices.py",
+      "quiz": [
+        {
+          "question": "When you execute x_tpu = x_cpu.to('tpu') in TorchTPU or jax.device_put(x_cpu, tpu_device) in JAX, where are the tensor bytes physically stored?",
+          "options": [
+            "In Host x86 DDR5 RAM, mapped via virtual memory pages.",
+            "In the TPU chip's on-package High Bandwidth Memory (HBM), transferred across the PCIe bus from Host DRAM.",
+            "Permanently inside the 128x128 Matrix Multiply Unit (MXU) accumulator registers."
+          ],
+          "answer": 1,
+          "explanation": "Device placement copies the contiguous tensor buffer across PCIe from Host DRAM into the TPU chip's High Bandwidth Memory (HBM). During kernel execution, the TPU's DMA engine stages tiles from HBM into on-chip VMEM scratchpad memory and MXU/VPU registers."
+        },
+        {
+          "question": "A weight tensor has shape (4096, 16384). How much TPU HBM does it consume in float32 vs. bfloat16?",
+          "options": [
+            "float32: 67.1 MB | bfloat16: 33.5 MB",
+            "float32: 268.4 MB (256 MiB) | bfloat16: 134.2 MB (128 MiB)",
+            "float32: 536.8 MB (512 MiB) | bfloat16: 268.4 MB (256 MiB)"
+          ],
+          "answer": 1,
+          "explanation": "4096 * 16384 = 67,108,864 elements. In float32 (4 bytes/element), 67,108,864 * 4 = 268,435,456 bytes (256 MiB). In bfloat16 (2 bytes/element), it consumes exactly half: 134,217,728 bytes (128 MiB)."
+        },
+        {
+          "question": "Why does JAX forbid in-place array mutation (such as x[0, 0] = 1.0) and require x = x.at[0, 0].set(1.0)?",
+          "options": [
+            "Because XLA traces pure functions without side effects so it can safely reorder, fuse, and parallelize operations across the computation graph.",
+            "Because TPU High Bandwidth Memory hardware cannot overwrite existing memory addresses.",
+            "Because JAX arrays are stored as immutable Python tuples."
+          ],
+          "answer": 0,
+          "explanation": "Functional purity guarantees that expressions have no hidden aliasing or mutation side effects. When compiled with @jax.jit, XLA analyzes buffer lifetimes and automatically reuses the underlying HBM buffer in-place when the old array is no longer referenced."
+        }
+      ]
+    },
+    {
+      "id": "unit_02",
+      "title": "0.2 Training Loop Mechanics: PyTorch Autograd vs. JAX value_and_grad",
+      "duration": "25m",
+      "file": "unit_02_training_loop_mechanics.md",
+      "lab_file": "labs/lab_02_linear_regression_tpu_jax.py",
+      "quiz": [
+        {
+          "question": "What happens in PyTorch if you omit optimizer.zero_grad() (or w.grad = None) inside your training loop?",
+          "options": [
+            "PyTorch raises a RuntimeError on Step 2.",
+            "loss.backward() adds (+=) the new step's gradients into the previous step's gradients stored in param.grad, corrupting the parameter update direction.",
+            "The weights stop updating after Step 1."
+          ],
+          "answer": 1,
+          "explanation": "PyTorch's backward pass accumulates gradients into param.grad (+=) by design to support gradient accumulation across micro-batches. For standard per-step updates, you must reset gradients via optimizer.zero_grad(set_to_none=True) or param.grad = None."
+        },
+        {
+          "question": "How does jax.value_and_grad(loss_fn)(params, x, y) know which argument to differentiate with respect to?",
+          "options": [
+            "By default it differentiates with respect to argnums=0 (the first argument, params), returning (loss_value, grads_pytree) where grads_pytree has the exact same dictionary/tree structure and shapes as params.",
+            "It differentiates with respect to every tensor created inside loss_fn.",
+            "It looks for arrays that have requires_grad=True set on them."
+          ],
+          "answer": 0,
+          "explanation": "In JAX, arrays do not carry a requires_grad flag. Instead, jax.grad and jax.value_and_grad differentiate the pure function with respect to its first positional argument (argnums=0) by default, returning a matching PyTree of gradients."
+        },
+        {
+          "question": "Why must manual parameter updates in PyTorch be wrapped in 'with torch.no_grad():'?",
+          "options": [
+            "Without torch.no_grad(), PyTorch's Autograd engine records the weight update arithmetic (w -= lr * w.grad) onto the computation history tape, wasting memory and corrupting future backward passes.",
+            "Because TPU hardware cannot execute subtraction when Autograd is enabled.",
+            "Because w.grad is inaccessible outside torch.no_grad()."
+          ],
+          "answer": 0,
+          "explanation": "Any arithmetic on a tensor with requires_grad=True is tracked by Autograd unless executed inside a torch.no_grad() context (or via torch.optim.Optimizer.step(), which internally uses @torch.no_grad())."
+        }
+      ]
+    },
+    {
+      "id": "unit_03",
+      "title": "0.3 Cloud TPU VM Architecture, Topologies & Spot Provisioning",
+      "duration": "20m",
+      "file": "unit_03_spot_tpu_provisioning.md",
+      "lab_file": "labs/lab_01_tensors_and_devices.py",
+      "quiz": [
+        {
+          "question": "Why does a 'v5p-8' Cloud TPU VM expose 4 devices in torch.accelerator.device_count() and jax.device_count(), whereas a 'v6e-4' also exposes 4 devices?",
+          "options": [
+            "In TPU v5p, each physical chip contains 2 TensorCores fused via MegaCore into 1 logical device, and GCP names v5p topologies by TensorCore count (8 TensorCores = 4 physical chips). In TPU v6e (Trillium), each chip has 1 larger TensorCore, so v6e-4 is also 4 physical chips.",
+            "Half of the chips on v5p-8 are reserved for the host operating system.",
+            "TorchTPU only supports up to 4 cores."
+          ],
+          "answer": 0,
+          "explanation": "TPU v4 and v5p have 2 TensorCores per physical chip (MegaCore exposes the 2 cores as 1 logical chip to XLA), and GCP's v5p-<N> suffix counts TensorCores. TPU v5e and v6e have 1 TensorCore per physical chip, so v6e-<N> counts chips directly."
+        },
+        {
+          "question": "Why does our runtime installer (scripts/install_tpu_runtime.sh) run 'pip download' on Cloudtop into .wheelhouse/ and SCP the wheels to the Argolis TPU VM?",
+          "options": [
+            "Because TPU VMs do not have network cards.",
+            "Because torch_tpu wheels are hosted in an internal Artifact Registry (ml-oss-artifacts-transient) requiring @google.com auth, and Argolis security policy prohibits placing corporate @google.com tokens or credentials on external Argolis VMs.",
+            "Because pip is not supported on Ubuntu 22.04."
+          ],
+          "answer": 1,
+          "explanation": "Downloading the wheels locally on Cloudtop and copying the .whl files via gcloud compute tpus tpu-vm scp ensures corporate credentials never leave your Cloudtop while enabling offline installation on the Argolis TPU VM."
+        }
+      ]
+    }
+  ]
+}

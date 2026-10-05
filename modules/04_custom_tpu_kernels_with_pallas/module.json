@@ -1,0 +1,44 @@
+{
+  "title": "Module 4: Writing Custom TPU Kernels with Pallas (JAX & TorchTPU Bridge)",
+  "description": "Writing tile-level TPU kernels in JAX Pallas (VMEM Ref buffers, BlockSpec, register-level bit packing) and calling them inside torch.compile via torch.tpu.pallas.jax_op.",
+  "units": [
+    {
+      "id": "unit_01",
+      "title": "4.1 Pallas Programming Model: VMEM Refs, BlockSpec & Grid Pipelining",
+      "duration": "25m",
+      "file": "unit_01_pallas_programming_model.md",
+      "lab_file": "labs/lab_01_pallas_fused_kernel_jax.py",
+      "quiz": [
+        {
+          "question": "Inside a JAX Pallas kernel body function, what do the input and output Ref arguments (such as x_ref and o_ref) represent in TPU hardware?",
+          "options": [
+            "Pointers to tiles already staged into on-chip Vector Memory (VMEM) SRAM by the TPU DMA engine according to your BlockSpec.",
+            "Files on the host SSD.",
+            "Global tensors in Host CPU DRAM."
+          ],
+          "answer": 0,
+          "explanation": "Pallas automatically generates async DMA transfers to copy each grid iteration's tile from HBM into on-chip VMEM before invoking your kernel body on x_ref[...] and writing o_ref[...] back to HBM."
+        }
+      ]
+    },
+    {
+      "id": "unit_02",
+      "title": "4.2 Integrating Pallas Kernels into TorchTPU via torch.tpu.pallas.jax_op & LLO Inspection",
+      "duration": "25m",
+      "file": "unit_02_torchtpu_pallas_bridge.md",
+      "lab_file": "labs/lab_02_pallas_in_torch_compile.py",
+      "quiz": [
+        {
+          "question": "How does torch.tpu.pallas.jax_op('my_ops::quant_and_pack', quant_and_pack_jax) execute a JAX/Pallas kernel inside a PyTorch torch.compile(backend='tpu') graph?",
+          "options": [
+            "It lowers the JAX/Pallas function to StableHLO, registers it as a native PyTorch custom op with automatic FakeTensor shape inference, and splices the Pallas kernel directly into the TorchTPU XLA graph with zero host copies.",
+            "It copies the PyTorch tensor to CPU NumPy on every step.",
+            "It rewrites the kernel in CUDA PTX."
+          ],
+          "answer": 0,
+          "explanation": "torch.tpu.pallas.jax_op('namespace::op_name', jax_fn) lowers the JAX/Pallas function directly to StableHLO and registers it in PyTorch's operator dispatcher so TorchDynamo/AOTAutograd fuses it into the TPU binary."
+        }
+      ]
+    }
+  ]
+}

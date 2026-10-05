@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="TorchTPU and JAX learning course and Cloud TPU Python runner.">
+  <title>TorchTPU &amp; JAX</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark-dimmed.min.css">
+  <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/python.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/bash.min.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="toggle-sidebar-btn" class="icon-btn" type="button" title="Toggle Sidebar" aria-label="Toggle Sidebar">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4H14M2 8H10M2 12H14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <div class="brand-lockup">
+        <img src="/favicon.svg" alt="" width="22" height="22" style="border-radius:4px;">
+        <span class="brand-title">TorchTPU &amp; JAX</span>
+      </div>
+    </div>
+
+    <div class="topbar-center">
+      <div class="view-mode-switcher" role="group" aria-label="Layout Mode">
+        <button id="mode-editorial-btn" class="mode-btn active" type="button">Read</button>
+        <button id="mode-split-btn" class="mode-btn" type="button">Code</button>
+      </div>
+      <div class="course-progress-pill" title="Completed units">
+        <div class="progress-bar-mini">
+          <div id="course-progress-fill" class="progress-bar-mini-fill" style="width: 0%"></div>
+        </div>
+        <span id="progress-summary" class="progress-summary-text">0 / 17</span>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="project-pill" title="Session-scoped GCP project">
+        <span class="pill-dot"></span>
+        <code id="project-badge">torchtpu-learning-lab</code>
+      </div>
+      <button id="toggle-tpu-drawer-btn" class="btn btn-blueprint btn-sm" type="button">
+        <span>TPU:</span>
+        <span id="tpu-status-indicator" class="status-tag">IDLE</span>
+      </button>
+    </div>
+  </header>
+
+  <section id="tpu-drawer" class="tpu-drawer hidden">
+    <div class="tpu-drawer-inner">
+      <div class="tpu-drawer-header">
+        <div>
+          <h3 class="tpu-drawer-title">Spot TPU VM (`torchtpu-learning-lab`)</h3>
+        </div>
+        <button id="close-tpu-drawer-btn" class="btn btn-secondary btn-sm" type="button">Close</button>
+      </div>
+      <div class="tpu-drawer-controls">
+        <div class="field-group">
+          <label for="tpu-zone-input">Zone</label>
+          <select id="tpu-zone-input">
+            <option value="us-east1-d">us-east1-d (v6e + v5p)</option>
+            <option value="us-east5-a">us-east5-a (v6e + v5p)</option>
+            <option value="us-east5-b">us-east5-b (v6e + v5p)</option>
+            <option value="us-central1-b">us-central1-b (v6e only)</option>
+            <option value="us-central2-b">us-central2-b (v6e only)</option>
+            <option value="europe-west4-a">europe-west4-a (v6e only)</option>
+            <option value="europe-west4-b">europe-west4-b (v5p only)</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label for="tpu-accel-input">Accelerator (Spot)</label>
+          <select id="tpu-accel-input">
+            <option value="v6e-1">v6e-1 (1 Trillium chip • 32 GiB HBM)</option>
+            <option value="v6e-4">v6e-4 (4 Trillium chips • 128 GiB HBM)</option>
+            <option value="v6e-8">v6e-8 (8 Trillium chips • 256 GiB HBM)</option>
+            <option value="v5p-8">v5p-8 (4 v5p MegaCore chips • 380 GiB HBM)</option>
+            <option value="v5p-16">v5p-16 (8 v5p MegaCore chips • 760 GiB HBM)</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label for="tpu-node-input">Node ID</label>
+          <input id="tpu-node-input" type="text" value="tpu-lab-vm">
+        </div>
+        <div class="tpu-action-buttons">
+          <button id="btn-refresh-tpu" class="btn btn-secondary" type="button">Status</button>
+          <button id="btn-bootstrap-project" class="btn btn-secondary" type="button">1. Bootstrap VPC</button>
+          <button id="btn-provision-tpu" class="btn btn-primary" type="button">2. Queue in Zone</button>
+          <button id="btn-hunt-tpu" class="btn btn-primary" type="button" title="Automatically try verified zones until Spot capacity is ACTIVE">2b. Auto-Hunt Spot Across Zones</button>
+          <button id="btn-install-runtime" class="btn btn-secondary" type="button">3. Install Wheels</button>
+          <button id="btn-delete-tpu" class="btn btn-danger" type="button">Delete TPU</button>
+        </div>
+      </div>
+      <pre id="tpu-infra-log" class="infra-log">Ready.</pre>
+    </div>
+  </section>
+
+  <main id="workspace-grid" class="workspace mode-editorial">
+    <aside id="chapters-sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-tabs" role="tablist">
+          <button id="sidebar-tab-modules" class="sidebar-tab active" type="button" role="tab">Modules (7)</button>
+          <button id="sidebar-tab-recipes" class="sidebar-tab" type="button" role="tab">Recipes (5)</button>
+        </div>
+        <input id="sidebar-search-input" class="sidebar-search-input" type="search" placeholder="Filter units or recipes..." aria-label="Filter units or recipes">
+      </div>
+      <nav id="curriculum-tree" class="curriculum-tree" aria-label="Modules"></nav>
+      <nav id="recipes-tree" class="curriculum-tree hidden" aria-label="Recipes"></nav>
+    </aside>
+
+    <section id="content-scroll-pane" class="content-pane">
+      <div class="unit-sticky-bar">
+        <div id="unit-breadcrumb" class="unit-breadcrumb"></div>
+        <div class="unit-nav-buttons">
+          <button id="btn-prev-unit" class="btn btn-secondary btn-sm" type="button">← Prev</button>
+          <button id="btn-complete-unit" class="btn btn-success-outline btn-sm" type="button">Mark Complete</button>
+          <button id="btn-open-split-lab" class="btn btn-blueprint btn-sm" type="button">Open Code</button>
+          <button id="btn-next-unit" class="btn btn-primary btn-sm" type="button">Next →</button>
+        </div>
+      </div>
+
+      <div class="editorial-grid">
+        <div class="reading-column">
+          <header class="chapter-header">
+            <h1 id="unit-main-title" class="chapter-title"></h1>
+            <p id="unit-module-desc" class="chapter-dek"></p>
+          </header>
+
+          <section id="interactive-widget-mount" class="interactive-figure-mount"></section>
+
+          <article id="unit-markdown" class="markdown-body"></article>
+
+          <section id="inline-lab-card" class="inline-lab-card">
+            <div class="inline-lab-header">
+              <div>
+                <h3 class="inline-lab-title"><code id="inline-lab-filename">lab.py</code></h3>
+              </div>
+              <div class="inline-lab-actions">
+                <button id="btn-inline-run" class="btn btn-primary btn-sm" type="button">Run</button>
+                <button id="btn-inline-expand" class="btn btn-secondary btn-sm" type="button">Edit Code</button>
+              </div>
+            </div>
+            <pre id="inline-console-preview" class="inline-console-preview">Click "Run" to execute this script.</pre>
+          </section>
+
+          <section id="knowledge-check-section" class="knowledge-check hidden">
+            <div class="kc-header">
+              <h2 class="kc-heading">Questions</h2>
+            </div>
+            <div id="knowledge-check-list" class="kc-list"></div>
+            <div class="kc-actions">
+              <button id="btn-check-answers" class="btn btn-primary" type="button">Check Answers</button>
+              <div id="kc-result-banner" class="kc-result-banner hidden"></div>
+            </div>
+          </section>
+
+          <footer class="unit-footer-card">
+            <div class="unit-footer-left">
+              <button id="btn-footer-prev" class="btn btn-secondary" type="button">← Previous</button>
+            </div>
+            <div class="unit-footer-center">
+              <button id="btn-footer-complete" class="btn btn-success-outline" type="button">Mark Complete</button>
+            </div>
+            <div class="unit-footer-right">
+              <button id="btn-footer-next" class="btn btn-primary" type="button">Next →</button>
+            </div>
+          </footer>
+        </div>
+
+        <aside class="toc-rail" aria-label="Contents">
+          <div class="toc-rail-sticky">
+            <div class="blueprint-kicker">Contents</div>
+            <nav id="unit-toc-list" class="unit-toc-list"></nav>
+            <div class="toc-rail-card">
+              <div id="toc-lab-name" class="toc-lab-name">labs/lab_01.py</div>
+              <button id="btn-toc-run-lab" class="btn btn-primary btn-sm" style="width:100%;margin-top:8px;" type="button">Run Lab</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="lab-sandbox-pane" class="lab-pane">
+      <div class="lab-toolbar">
+        <div class="lab-toolbar-left">
+          <span class="lab-status-dot"></span>
+          <code id="lab-filename-label" class="lab-file-pill">lab.py</code>
+        </div>
+        <div class="lab-toolbar-right">
+          <label class="checkbox-label" title="Pass --xla_dump_to and capture post-optimization XLA HLO text">
+            <input id="chk-capture-hlo" type="checkbox">
+            <span>Dump HLO</span>
+          </label>
+          <select id="run-target-select" class="target-select" aria-label="Execution Target">
+            <option value="local">Local Host</option>
+            <option value="tpu">Cloud TPU VM</option>
+          </select>
+          <button id="btn-copy-code" class="btn btn-secondary btn-sm" type="button">Copy</button>
+          <button id="btn-reset-code" class="btn btn-secondary btn-sm" type="button">Reset</button>
+          <button id="btn-run-code" class="btn btn-primary btn-sm" type="button">Run</button>
+          <button id="btn-close-split-lab" class="btn btn-secondary btn-sm" type="button" title="Close Code Pane">✕</button>
+        </div>
+      </div>
+
+      <div class="editor-wrapper">
+        <div id="editor-gutter" class="editor-gutter" aria-hidden="true">1</div>
+        <textarea id="code-editor" class="code-editor" spellcheck="false" aria-label="Python Code Editor"></textarea>
+      </div>
+
+      <div class="output-panel">
+        <div class="output-tabs">
+          <button id="tab-console" class="output-tab active" type="button">Output</button>
+          <button id="tab-hlo" class="output-tab" type="button">XLA HLO</button>
+          <span id="run-timing-badge" class="run-timing-badge"></span>
+        </div>
+        <pre id="console-output" class="console-output"></pre>
+        <pre id="hlo-output" class="console-output hidden"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

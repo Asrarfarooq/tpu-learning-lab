@@ -1,0 +1,44 @@
+{
+  "title": "Module 5: Multi-Chip Distributed Training (DDP / FSDP vs. JAX Sharding) & Serving",
+  "description": "Scaling across multi-chip TPU topologies over Inter-Chip Interconnect (ICI): AllReduce, ReduceScatter, AllGather, TorchTPU DDP/FSDP, and JAX NamedSharding / shard_map.",
+  "units": [
+    {
+      "id": "unit_01",
+      "title": "5.1 Inter-Chip Interconnect (ICI) Collectives: AllReduce, ReduceScatter & AllGather",
+      "duration": "20m",
+      "file": "unit_01_spmd_and_collectives.md",
+      "lab_file": "labs/lab_01_multichip_training.py",
+      "quiz": [
+        {
+          "question": "How is a ring AllReduce across N TPU chips mathematically decomposed into two bandwidth-optimal collective stages?",
+          "options": [
+            "A ReduceScatter (where each chip ends up with 1/N of the summed gradient shard) followed by an AllGather (where all chips receive the full summed gradient).",
+            "Copying all tensors to Host CPU RAM and summing in Python.",
+            "Broadcasting Chip 0's gradients and discarding Chips 1..N-1."
+          ],
+          "answer": 0,
+          "explanation": "AllReduce = ReduceScatter + AllGather. FSDP (ZeRO-3) exploits this exact decomposition by keeping only the ReduceScatter stage during the backward pass so each chip only stores 1/N of the gradients and optimizer state!"
+        }
+      ]
+    },
+    {
+      "id": "unit_02",
+      "title": "5.2 TorchTPU DDP / FSDP vs. JAX NamedSharding & End-to-End Transformer Benchmark",
+      "duration": "25m",
+      "file": "unit_02_ddp_fsdp_vs_jax_sharding.md",
+      "lab_file": "labs/lab_02_transformer_inference_benchmark.py",
+      "quiz": [
+        {
+          "question": "In JAX GSPMD sharding, what does PartitionSpec('data', None) specify when applied to a 2D batch activation tensor of shape (Batch, Hidden)?",
+          "options": [
+            "Axis 0 (Batch) is partitioned evenly across the 'data' mesh axis of TPU chips, while Axis 1 (Hidden) is replicated across all chips.",
+            "Both axes are replicated.",
+            "Axis 1 is sharded and Axis 0 is replicated."
+          ],
+          "answer": 0,
+          "explanation": "Each element in PartitionSpec corresponds to a tensor dimension: 'data' shards dimension 0 across the 'data' mesh axis, and None replicates dimension 1."
+        }
+      ]
+    }
+  ]
+}

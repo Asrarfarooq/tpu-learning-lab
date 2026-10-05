@@ -1,0 +1,64 @@
+{
+  "title": "Module 2: Neural Network Engineering & Eliminating Host-Device Stalls",
+  "description": "Building multi-layer neural blocks (torch.nn.Module vs. Flax NNX / functional PyTrees), AdamW vs. Optax, DataLoader configuration for TPUs, and eliminating host-device synchronization stalls.",
+  "units": [
+    {
+      "id": "unit_01",
+      "title": "2.1 Neural Modules, RMSNorm, SwiGLU & Optimizer State (PyTorch vs. JAX)",
+      "duration": "25m",
+      "file": "unit_01_modules_and_optimizers.md",
+      "lab_file": "labs/lab_01_mlp_and_vit_block.py",
+      "quiz": [
+        {
+          "question": "In an AdamW optimizer, how much extra TPU HBM memory is consumed by optimizer state per learnable parameter in float32?",
+          "options": [
+            "Zero extra bytes.",
+            "8 bytes per parameter (4 bytes for the first moment m_t + 4 bytes for the second moment v_t), doubling or tripling the memory footprint of the model weights.",
+            "1 byte per parameter."
+          ],
+          "answer": 1,
+          "explanation": "AdamW maintains two exponential moving averages per weight parameter: first moment m_t (mean of gradients) and second moment v_t (uncentered variance of gradients). In float32, m_t and v_t add 8 bytes per parameter on top of the weight and gradient buffers."
+        },
+        {
+          "question": "Why should a PyTorch DataLoader feeding a Cloud TPU VM be configured with drop_last=True and num_workers=0 (or persistent spawn workers)?",
+          "options": [
+            "drop_last=True prevents a smaller final batch at the end of an epoch from triggering a full XLA dynamic-shape recompilation, and num_workers=0 avoids fork() deadlocks with multithreaded libtpu.",
+            "Because TPUs cannot process more than 1 batch per epoch.",
+            "Because shuffle=True is unsupported in Python 3.12."
+          ],
+          "answer": 0,
+          "explanation": "A remainder batch with a different batch size causes XLA to recompile the entire forward/backward graph. Additionally, POSIX fork() after initializing libtpu threads can deadlock child processes."
+        }
+      ]
+    },
+    {
+      "id": "unit_02",
+      "title": "2.2 Asynchronous Dispatch & Eliminating Host-Device Stalls (Detached Loss & lax.scan)",
+      "duration": "25m",
+      "file": "unit_02_eliminating_host_stalls.md",
+      "lab_file": "labs/lab_02_stall_free_training_loop.py",
+      "quiz": [
+        {
+          "question": "What happens to TPU utilization if you execute print(f'Step {step}: {loss.item()}') on every single training step?",
+          "options": [
+            "It speeds up training by clearing the TPU queue.",
+            "loss.item() forces a synchronous DMA transfer from TPU HBM to Host CPU RAM on every step, draining the asynchronous execution queue and leaving the TPU idle while waiting for Python on the host.",
+            "It only prints once at the end of training."
+          ],
+          "answer": 1,
+          "explanation": "Both TorchTPU and JAX dispatch compiled TPU kernels asynchronously so Python can enqueue Step N+1 while the TPU is still executing Step N. Calling .item() blocks the host until Step N finishes, creating a host-dispatch bubble between every step."
+        },
+        {
+          "question": "How do you log average training loss every K steps in TorchTPU without stalling the TPU on intermediate steps?",
+          "options": [
+            "Accumulate running_loss += loss.detach() on the TPU device tensor across K steps, and only call running_loss.item() once when step % K == 0.",
+            "Call loss.cpu().numpy() on every step.",
+            "Disable backward()."
+          ],
+          "answer": 0,
+          "explanation": "Adding loss.detach() to a TPU-resident scalar accumulator enqueues a lightweight on-device addition without copying bytes back to the host CPU until the logging interval K is reached."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "id": "06_huggingface_finetuning_and_recipes",
+  "title": "Module 6: Hugging Face LLMs, LoRA/SFT Fine-Tuning & v5p vs. v6e Recipes",
+  "description": "Production Hugging Face Transformers bring-up on TorchTPU: eliminating masking graph breaks, zero-recompilation StaticCache decoding, SingleTraceTrainer & PEFT LoRA fine-tuning, Splash Attention, and v5p vs. v6e consulting recipes.",
+  "units": [
+    {
+      "id": "unit_01",
+      "title": "6.1 Hugging Face LLMs on TorchTPU: 4D Causal Masks, StaticCache & Splash Attention",
+      "duration": "30m",
+      "file": "unit_01_hf_static_cache_and_splash_attention.md",
+      "lab_file": "labs/lab_01_hf_static_cache_decode_benchmark.py",
+      "quiz": [
+        {
+          "question": "Why does passing a standard 2D attention_mask from AutoTokenizer into a compiled Hugging Face model cause graph breaks on TorchTPU?",
+          "options": [
+            "transformers.masking_utils inspects 2D masks using data-dependent control flow (.all() / .item()) to detect packed sequences or causal mask shortcuts, forcing host-device synchronization.",
+            "TPUs cannot store 2D integer tensors in HBM.",
+            "AutoTokenizer only runs on GPUs."
+          ],
+          "answer": 0,
+          "explanation": "In transformers.masking_utils, 2D attention masks trigger data-dependent checks (.all() / .item()) that break TorchDynamo graph capture. Dropping redundant full-length 2D masks or precomputing a 4D causal mask bypasses these checks."
+        },
+        {
+          "question": "During autoregressive decoding on TorchTPU, why should next_token be selected using torch.argmax(logits[:, -1, :], dim=-1, keepdim=True) rather than .unsqueeze(-1)?",
+          "options": [
+            "keepdim=True materializes the [batch, 1] shape directly inside the reduction kernel, whereas .unsqueeze(-1) creates a pending as_strided view that triggers an extra eager XLA kernel before the next compiled decode step.",
+            "unsqueeze(-1) converts token IDs to float32.",
+            "argmax does not work without keepdim=True."
+          ],
+          "answer": 0,
+          "explanation": "Verified in torch_tpu/perflab/steps/decode.py: .unsqueeze(-1) creates a view (as_strided) that forces an extra eager XLA launch when fed into the next compiled decode step."
+        }
+      ]
+    },
+    {
+      "id": "unit_02",
+      "title": "6.2 Zero-Break Training & Fine-Tuning: SingleTraceTrainer, PEFT LoRA & Chunked Vocab Loss",
+      "duration": "30m",
+      "file": "unit_02_single_trace_lora_and_sft.md",
+      "lab_file": "labs/lab_02_single_trace_lora_finetuning.py",
+      "quiz": [
+        {
+          "question": "Why does wrapping a standard PyTorch training step (forward + loss.backward() + optimizer.step()) in torch.compile cause graph breaks, and how does SingleTraceTrainer solve it?",
+          "options": [
+            "Standard loss.backward() invokes the eager C++ autograd engine and torch.optim step decorators insert graph breaks; SingleTraceTrainer uses torch.func.grad_and_value + functional optimizer updates + make_fx to trace forward, backward, and optimizer update into a single fullgraph=True XLA program.",
+            "torch.compile only supports inference.",
+            "SingleTraceTrainer moves the optimizer to the Host CPU."
+          ],
+          "answer": 0,
+          "explanation": "SingleTraceTrainer (torch_tpu.extras.optimizers.single_trace_trainer) traces forward, loss, reverse-mode autodiff (torch.func.grad_and_value), and functional AdamW/SGD/Muon updates into one unified FX graph with zero graph breaks and static buffer donation."
+        },
+        {
+          "question": "When fine-tuning a large-vocabulary LLM (such as Gemma with vocab_size=256,000 or Qwen3 with vocab_size=151,936) at long sequence lengths, what prevents HBM Out-Of-Memory (OOM) errors at the LM head?",
+          "options": [
+            "Chunkwise Fused Unembedding + Cross-Entropy Loss: slicing the flattened hidden states [B*S, D] into fixed chunks (e.g., 512 tokens) and computing the vocabulary projection + cross-entropy per chunk inside the compiled graph so the full [B, S, V] logits tensor is never materialized in HBM.",
+            "Converting the token IDs to bfloat16.",
+            "Setting TORCH_TPU_LAUNCH_BLOCKING=1."
+          ],
+          "answer": 0,
+          "explanation": "A full [B=4, S=8192, V=256000] logits tensor requires 16.8 GB in bfloat16 (33.5 GB in float32) just for the output layer. Chunking along the token dimension in blocks of 512 keeps peak logits memory under 260 MB."
+        }
+      ]
+    },
+    {
+      "id": "unit_03",
+      "title": "6.3 Cloud TPU Consulting Cookbook: v5p vs. v6e Sizing Matrix & Production Recipes",
+      "duration": "25m",
+      "file": "unit_03_v5p_vs_v6e_recipes_cookbook.md",
+      "lab_file": "labs/lab_03_v5p_vs_v6e_recipe_advisor.py",
+      "quiz": [
+        {
+          "question": "How many addressable PyTorch/JAX devices (torch.accelerator.device_count()) are exposed per physical chip on TPU v5e, TPU v5p, TPU v6e (Trillium), and TPU v7 (Ironwood)?",
+          "options": [
+            "1 device per chip on v5e, v5p (Megacore fused), and v6e; 2 devices per chip on v7 (Ironwood).",
+            "2 devices per chip on all TPU generations.",
+            "8 devices per chip on v6e."
+          ],
+          "answer": 0,
+          "explanation": "Verified in torch_tpu/_internal/utils/hardware.py (_DEVICES_PER_CHIP): v4, v5e, v5p (Megacore), and v6e expose 1 device per physical chip, whereas v7 exposes 2 devices per chip (96 GiB HBM and 1153.5 BF16 TFLOP/s per device)."
+        },
+        {
+          "question": "When migrating multi-chip training on TorchTPU from PyTorch FSDPv2 (fully_shard) to SimpleFSDP for whole-graph XLA compilation, what gradient reduction detail must you account for?",
+          "options": [
+            "FSDPv2 defaults to AVG gradient reduction across ranks, whereas SimpleFSDP uses SUM reduction (Partial(reduce_op='sum')), requiring you to scale the loss by 1.0 / world_size before backward().",
+            "SimpleFSDP only supports float64 weights.",
+            "SimpleFSDP requires service account keys."
+          ],
+          "answer": 0,
+          "explanation": "SimpleFSDP expresses all-gather and reduce-scatter as compile-time DTensor redistributions with sum reduction, so scaling loss by 1.0 / world_size preserves identical gradient magnitudes."
+        }
+      ]
+    }
+  ]
+}

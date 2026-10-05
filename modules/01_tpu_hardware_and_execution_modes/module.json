@@ -1,0 +1,103 @@
+{
+  "title": "Module 1: TPU Hardware Bring-Up \u2014 MXU Precision, Eager vs. Compile & HLO/LLO",
+  "description": "Deep hardware mechanics of the TPU Systolic Array (MXU), IEEE float32 vs. bfloat16 bit layouts, 1/3/6-pass matmul emulation, Strict vs. Defer-and-Fuse Eager, torch.compile / @jax.jit, and reading XLA HLO/LLO dumps.",
+  "units": [
+    {
+      "id": "unit_01",
+      "title": "1.1 Systolic Arrays (MXU), bfloat16 Bit Layout & Multi-Pass Precision",
+      "duration": "25m",
+      "file": "unit_01_systolic_arrays_and_bf16.md",
+      "lab_file": "labs/lab_01_device_and_mxu_precision.py",
+      "quiz": [
+        {
+          "question": "Why does bfloat16 (Brain Floating Point) have the exact same dynamic range (overflow/underflow limits) as IEEE float32 despite using only 16 bits?",
+          "options": [
+            "Because bfloat16 allocates 1 sign bit and 8 exponent bits (identical to float32's 8 exponent bits), truncating only the mantissa (fraction) from 23 bits to 7 bits.",
+            "Because bfloat16 uses 15 exponent bits and 1 sign bit.",
+            "Because TPU hardware automatically scales every tensor by 10^-5."
+          ],
+          "answer": 0,
+          "explanation": "IEEE float32 is 1 sign + 8 exponent + 23 mantissa bits. IEEE float16 is 1 sign + 5 exponent + 10 mantissa bits (which overflows above 65,504 and requires loss scaling). Google's bfloat16 is 1 sign + 8 exponent + 7 mantissa bits, preserving the full ~10^-38 to ~3.4x10^38 range of float32."
+        },
+        {
+          "question": "How does the TPU Matrix Multiply Unit (MXU) execute a float32 matrix multiplication when precision is set to 'high' (bf16_3x) vs. 'highest' (bf16_6x)?",
+          "options": [
+            "It switches to a separate 64-bit CPU core.",
+            "Because the physical MXU multipliers accept bfloat16 operands and accumulate in float32, XLA decomposes each float32 input into bfloat16 high/low residual slices and executes 3 MXU passes (bf16_3x, ~14-bit mantissa) or 6 MXU passes (bf16_6x, full 23-bit IEEE fp32 precision).",
+            "It rounds the output to int8."
+          ],
+          "answer": 1,
+          "explanation": "The MXU multipliers natively multiply bfloat16 inputs and accumulate into float32 registers. Emulating higher mantissa precision on float32 inputs requires decomposing x = x_hi + x_lo (+ x_lo2) and executing 3 or 6 systolic passes, trading throughput (1/3x or 1/6x) for numerical accuracy."
+        },
+        {
+          "question": "Why should matrix dimensions (Batch, Sequence, Hidden, Vocab) on TPUs be padded to multiples of 128 (or 256 on TPU v6e)?",
+          "options": [
+            "Because the physical MXU systolic array is 128x128 (v5e/v5p) or 256x256 (v6e), and the VPU vector lanes are 8x128. Unaligned dimensions leave systolic cells idle (zero-padded tiles) inside every clock cycle.",
+            "Because XLA throws a syntax error on odd numbers.",
+            "Because Python lists only support powers of 2."
+          ],
+          "answer": 0,
+          "explanation": "A 128x128 or 256x256 systolic array processes full tiles every clock cycle. A matrix of shape (129, 129) on a 128x128 MXU requires 4 full tiles (256x256) where nearly 75% of the extra tiles compute on padded zeros."
+        }
+      ]
+    },
+    {
+      "id": "unit_02",
+      "title": "1.2 Execution Modes: Strict Eager, Defer-and-Fuse, torch.compile & @jax.jit",
+      "duration": "25m",
+      "file": "unit_02_eager_vs_compiled_xla.md",
+      "lab_file": "labs/lab_02_execution_modes_benchmark.py",
+      "quiz": [
+        {
+          "question": "Why is running an uncompiled chain of elementwise ops (y = sin(x) * cos(x) + x) in Strict Eager mode (TORCH_TPU_DEFER_AND_FUSE=0) memory-bandwidth bound on a TPU?",
+          "options": [
+            "Each individual operator is compiled and dispatched separately, forcing the TPU to read inputs from HBM into VMEM and write every intermediate tensor back out to HBM before the next op starts.",
+            "Strict Eager mode runs on the Host CPU instead of the TPU.",
+            "Strict Eager mode converts all tensors to float64."
+          ],
+          "answer": 0,
+          "explanation": "In Strict Eager mode, each ATen op executes as an isolated single-op XLA kernel with full HBM read/write round-trips. When compiled with torch.compile or @jax.jit, XLA fuses the entire chain into a single kernel that keeps intermediate results in on-chip VMEM/registers."
+        },
+        {
+          "question": "In TorchTPU Defer-and-Fuse Eager mode (TORCH_TPU_DEFER_AND_FUSE=1), what triggers the deferred operator queue to compile and execute on the TPU?",
+          "options": [
+            "Only restarting the Python process.",
+            "Any host-device synchronization barrier (such as print(tensor), tensor.item(), tensor.cpu(), conditional branching on a tensor, or torch.accelerator.synchronize()) or internal defer-and-fuse graph boundaries.",
+            "Calling torch.manual_seed()."
+          ],
+          "answer": 1,
+          "explanation": "Defer-and-Fuse accumulates ATen operations lazily until the host requests concrete tensor bytes, a synchronize() barrier is called, or an internal flush threshold is reached."
+        }
+      ]
+    },
+    {
+      "id": "unit_03",
+      "title": "1.3 Reading XLA HLO / LLO Dumps, Compilation Cache & Dynamic Shape Traps",
+      "duration": "20m",
+      "file": "unit_03_hlo_llo_and_cache.md",
+      "lab_file": "labs/lab_03_inspect_hlo_and_recompiles.py",
+      "quiz": [
+        {
+          "question": "In an XLA post-optimization HLO dump (*after_optimizations*.txt), what indicates that XLA successfully fused multiple elementwise operations into a single TPU kernel?",
+          "options": [
+            "A single fused_computation block called by a kLoop / fusion instruction containing the entire chain of operations with no intermediate HBM parameter loads.",
+            "Separate ENTRY modules for each addition.",
+            "The presence of Python bytecode instructions."
+          ],
+          "answer": 0,
+          "explanation": "XLA's fusion pass merges producer-consumer operators into a single fused_computation body invoked by a fusion instruction (kind=kLoop or kOutput), keeping intermediate values in VMEM/registers."
+        },
+        {
+          "question": "What happens if a function compiled with torch.compile(..., backend='tpu', dynamic=False) or @jax.jit is called with a different batch size on every step?",
+          "options": [
+            "XLA specializes compiled binaries on exact input tensor shapes and dtypes; changing shapes triggers a full XLA recompilation on every new shape, destroying throughput.",
+            "The TPU automatically resizes its physical systolic array in hardware.",
+            "The extra batch rows are silently dropped."
+          ],
+          "answer": 0,
+          "explanation": "XLA compilation is static-shape specialized so it can hardcode tile dimensions, VMEM offsets, and loop bounds. Varying batch sizes or sequence lengths without bucket padding triggers costly recompilations."
+        }
+      ]
+    }
+  ]
+}

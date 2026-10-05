@@ -1,0 +1,54 @@
+{
+  "title": "Module 3: Benchmarking Methodology, Roofline MFU & XProf Hardware Profiling",
+  "description": "Rigorous TPU benchmarking (warmup, barrier sync, Roofline arithmetic intensity, MFU & HBM bandwidth math) and capturing/analyzing XProf hardware traces.",
+  "units": [
+    {
+      "id": "unit_01",
+      "title": "3.1 Roofline Model, Arithmetic Intensity, MFU & LLM Operator Benchmarking",
+      "duration": "25m",
+      "file": "unit_01_rigorous_benchmarking.md",
+      "lab_file": "labs/lab_01_llm_operators_benchmark.py",
+      "quiz": [
+        {
+          "question": "A TPU v6e chip has 918 TFLOPs/s peak bf16 compute and 1,640 GB/s HBM bandwidth. What is its Roofline ridge point (minimum FLOPs per byte required for an operator to be compute-bound rather than HBM memory-bandwidth bound)?",
+          "options": [
+            "~10 FLOPs / byte",
+            "918,000 GFLOPs/s / 1,640 GB/s = ~560 FLOPs / byte",
+            "~5,000 FLOPs / byte"
+          ],
+          "answer": 1,
+          "explanation": "The Roofline ridge point is Peak Compute / Peak Memory Bandwidth = 918e12 / 1.64e12 = 559.7 FLOPs/byte. Elementwise ops (~1 FLOP/byte) and small-batch matmuls are strictly HBM bandwidth-bound; large matmuls (batch/tokens >= 560) become MXU compute-bound."
+        },
+        {
+          "question": "Why will timing a TorchTPU or JAX function with time.perf_counter() without calling torch.accelerator.synchronize() or .block_until_ready() produce fake 100x higher TFLOPs numbers?",
+          "options": [
+            "Without an explicit synchronization barrier before stopping the timer, time.perf_counter() only measures the ~10-50 microsecond CPU cost of enqueueing the async kernel rather than the actual TPU execution duration.",
+            "Because time.perf_counter() measures CPU clock frequency.",
+            "Because XLA deletes unused outputs."
+          ],
+          "answer": 0,
+          "explanation": "Asynchronous dispatch returns immediately to Python. Accurate benchmarking requires (1) warmup iterations to finish XLA compilation, and (2) an explicit device synchronization barrier immediately before starting and stopping the wall-clock timer."
+        }
+      ]
+    },
+    {
+      "id": "unit_02",
+      "title": "3.2 Capturing & Reading XProf Hardware Traces (Trace Viewer, Op Profile, Memory)",
+      "duration": "25m",
+      "file": "unit_02_xprof_trace_analysis.md",
+      "lab_file": "labs/lab_02_capture_xprof_trace.py",
+      "quiz": [
+        {
+          "question": "In TorchTPU, how do you configure step-windowed XProf profiling and output trace directories using standard PyTorch profiler APIs and TorchTPU environment knobs?",
+          "options": [
+            "Use torch.profiler.profile with activities=[ProfilerActivity.CPU, ProfilerActivity.TPU], torch.profiler.schedule(wait=..., warmup=..., active=...), TpuProfilerConfig, and TORCH_TPU_PROFILER_OUTPUT_DIR (or tensorboard_trace_handler).",
+            "Set CUDA_LAUNCH_BLOCKING=1 and PYTHONPATH=/tmp.",
+            "Set XLA_PYTHON_CLIENT_PREALLOCATE=false."
+          ],
+          "answer": 0,
+          "explanation": "TorchTPU integrates directly into torch.profiler.profile(activities=[ProfilerActivity.CPU, ProfilerActivity.TPU]) with torch.tpu.profiler.TpuProfilerConfig and supports TORCH_TPU_PROFILER_OUTPUT_DIR and TORCH_TPU_XPROF_SESSION_ID."
+        }
+      ]
+    }
+  ]
+}

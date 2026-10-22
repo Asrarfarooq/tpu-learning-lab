@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-'''Recipe 3: Zero-Graph-Break SingleTraceTrainer & PEFT LoRA Fine-Tuning Template on TorchTPU.'''
+'''Recipe 3: Zero-Graph-Break SingleTraceTrainer (torch.tpu.optimizers) & PEFT LoRA Fine-Tuning Template.'''
 
-import torch
-import torch.nn as nn
+try:
+  import torch
+  import torch.nn as nn
+  HAS_TORCH = True
+except ImportError:
+  HAS_TORCH = False
 
 
 def chunked_unembed_cross_entropy(hidden_states, lm_head_weight, labels, chunk_size: int = 128):
@@ -21,11 +25,19 @@ def chunked_unembed_cross_entropy(hidden_states, lm_head_weight, labels, chunk_s
 
 
 def main():
+  if not HAS_TORCH:
+    print("PyTorch not installed in local CPU preview env; switch Execution Target to 'Cloud TPU VM' to run SingleTraceTrainer (torch.tpu.optimizers).")
+    return
   try:
     import torch_tpu  # noqa: F401
-    device = torch.device("tpu" if hasattr(torch, "tpu") and torch.tpu.is_available() else "cpu")
   except ImportError:
-    device = torch.device("cpu")
+    pass
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
+  device = torch.device("tpu" if has_tpu else "cpu")
 
   print(f"Running SingleTrace / Fused AdamW Fine-Tuning Recipe on device={device}...")
   model = nn.Sequential(
@@ -37,19 +49,20 @@ def main():
   x = torch.randn(4, 128, 256, dtype=torch.bfloat16, device=device)
   target = torch.randn(4, 128, 256, dtype=torch.bfloat16, device=device)
 
-  # Use SingleTraceTrainer when running on TorchTPU for 0 graph breaks + input buffer donation
+  # Use public torch.tpu.optimizers.SingleTraceTrainer on TorchTPU for 0 graph breaks + buffer donation
   if device.type == "tpu":
     try:
-      from torch_tpu.extras.optimizers import adamw, single_trace_trainer
-      trainer = single_trace_trainer.SingleTraceTrainer(
+      from torch.tpu import optimizers
+      trainer = optimizers.SingleTraceTrainer(
           model=model,
-          optimizer=adamw.TorchAdamw(lr=1e-3, use_bfloat16_moments=True),
+          optimizer=optimizers.AdamW(lr=1e-3, weight_decay=0.01, use_bfloat16_moments=True),
+          compile_fn=lambda gm, example_inputs: torch.compile(gm, backend="tpu", fullgraph=True),
       )
-      train_step = trainer.make_compiled_train_step(x, target)
+      train_step = trainer.make_compiled_train_step()
       for step in range(1, 11):
         loss = train_step(x, target)
       torch.accelerator.synchronize()
-      print(f"SingleTraceTrainer Step 10 Loss: {loss.item():.6f}")
+      print(f"SingleTraceTrainer (torch.tpu.optimizers.AdamW) Step 10 Loss: {loss.item():.6f}")
       return
     except ImportError:
       pass

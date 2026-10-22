@@ -14,21 +14,8 @@ If you come from general software engineering or Python scripting, you are famil
 
 A **Tensor** (`torch.Tensor` or `jax.Array`) eliminates this overhead by separating **metadata** from a **raw, contiguous byte buffer**:
 
-```
-+-------------------------------------------------------------------+
-| Tensor Header (Metadata in Host / Device Runtime)                 |
-| - data_ptr : 0x7f8a40000000 (Physical address in RAM or TPU HBM)  |
-| - dtype    : bfloat16 (2 bytes per element)                       |
-| - shape    : (2, 4)   (2 rows, 4 columns -> 8 elements total)     |
-| - strides  : (4, 1)   (Jump 4 elements next row, 1 next col)      |
-| - device   : tpu:0    (Resides on TPU Chip 0 HBM)                 |
-+-------------------------------------------------------------------+
-                                 |
-                                 v
-+-------+-------+-------+-------+-------+-------+-------+-------+
-| [0,0] | [0,1] | [0,2] | [0,3] | [1,0] | [1,1] | [1,2] | [1,3] |
-+-------+-------+-------+-------+-------+-------+-------+-------+
-Byte 0  Byte 2  Byte 4  Byte 6  Byte 8  Byte 10 Byte 12 Byte 14
+```schematic
+tensor-memory-layout
 ```
 
 ### Core Tensor Attributes Defined
@@ -46,38 +33,8 @@ Byte 0  Byte 2  Byte 4  Byte 6  Byte 8  Byte 10 Byte 12 Byte 14
 
 When you SSH into a Cloud TPU VM and run `python3 script.py`, your Python interpreter executes on the **Host x86 CPU** (for example, an AMD EPYC or Intel Xeon processor with 100–400+ GB of system DDR5 RAM). Attached to that host motherboard over **PCIe Gen4/Gen5** are the **Google TPU chips**.
 
-```
-+-------------------------------------------------------------------+
-| HOST x86 SERVER: System DRAM (100 - 400 GB)                       |
-| - Runs Python interpreter, OS, DataLoader & graph dispatch        |
-+-------------------------------------------------------------------+
-          |  .to("tpu") / jax.device_put()      ^  .cpu() / device_get
-          |  PCIe Bus (~16 - 64 GB/s)           |
-          v                                     |
-+-------------------------------------------------------------------+
-| GOOGLE CLOUD TPU CHIP                                             |
-|                                                                   |
-|  +-------------------------------------------------------------+  |
-|  | 1. On-Package HBM (High Bandwidth Memory)                   |  |
-|  |    - Capacity  : 32 GB (v6e) / 95 GB (v5p)                  |  |
-|  |    - Bandwidth : 1,640 GB/s (v6e) / 2,765 GB/s (v5p)        |  |
-|  |    - Stores all TPU tensors (weights, activations, KV cache)|  |
-|  +------------------------------+------------------------------+  |
-|                                 | Async DMA Engine (Tile Loads)   |
-|                                 v                                 |
-|  +-------------------------------------------------------------+  |
-|  | 2. On-Die VMEM (Vector SRAM Scratchpad)                     |  |
-|  |    - Multi-TB/s on-die bandwidth, tens of MB capacity       |  |
-|  +------------------------------+------------------------------+  |
-|                                 |                                 |
-|                                 v                                 |
-|  +-------------------------------------------------------------+  |
-|  | 3. TensorCore Compute Units                                 |  |
-|  |    - MXU : Systolic Matrix Multiply (128x128 v5p / 256x256) |  |
-|  |    - VPU : Vector Processing Unit (elementwise / reductions)|  |
-|  |    - XLU : Transpose / Permute Unit                         |  |
-|  +-------------------------------------------------------------+  |
-+-------------------------------------------------------------------+
+```schematic
+tpu-hardware-hierarchy
 ```
 
 ### Why This Memory Hierarchy Matters for Your Code
@@ -87,19 +44,22 @@ When you SSH into a Cloud TPU VM and run `python3 script.py`, your Python interp
 
 ## 4. Side-by-Side API Mapping: TorchTPU (`torch_tpu`) vs. JAX
 
-TorchTPU registers the `"tpu"` device backend directly into PyTorch's `torch.accelerator` and `PrivateUse1` dispatcher (`torch.tpu`). If you know `torch.cuda`, you already know 95% of the `torch.tpu` API:
+In the open-source `torch_tpu` (`0.2.0+`) release, installing `torch_tpu` registers PyTorch's `TORCH_DEVICE_BACKEND_AUTOLOAD=1` entry point (`torch_tpu._autoload`). Simply running `import torch` automatically loads the `"tpu"` device backend into PyTorch's unified **`torch.accelerator`** API and configures `torch.compile` to automatically select `backend="tpu"` (`dynamic=False`) whenever inputs reside on a TPU device.
+
+> **Important Public API Boundary (`torch.accelerator` vs. `torch.tpu`):** Beginning with PyTorch 2.11 and `torch_tpu 0.2.0`, `torch.tpu.is_available()`, `torch.tpu.device_count()`, `torch.tpu.current_device()`, and `torch.tpu.synchronize()` are marked **Internal-Only** (`strict=True` in `torch_tpu._internal.public_api`) so that PyTorch's device-agnostic `torch.accelerator` module can delegate to them internally without user code coupling to legacy device-specific calls. Always call **`torch.accelerator.is_available()`**, **`torch.accelerator.device_count()`**, and **`torch.accelerator.synchronize()`** in user code, and use **`torch.tpu.get_device_properties()`** for TPU-specific silicon introspection.
 
 | Task | PyTorch with TorchTPU (`torch` + `torch_tpu`) | JAX (`jax` + `jax.numpy as jnp`) |
 | :--- | :--- | :--- |
-| **Import Framework** | `import torch; import torch_tpu` | `import jax; import jax.numpy as jnp` |
-| **Check TPU Availability** | `torch.tpu.is_available()` or `torch.accelerator.is_available()` | `jax.default_backend() == "tpu"` |
+| **Import Framework** | `import torch` *(autoloads `torch_tpu` via `TORCH_DEVICE_BACKEND_AUTOLOAD=1`)* | `import jax; import jax.numpy as jnp` |
+| **Check TPU Availability** | `torch.accelerator.is_available() and torch.accelerator.current_accelerator().type == "tpu"` | `jax.default_backend() == "tpu"` |
 | **Count Logical TPU Chips** | `torch.accelerator.device_count()` | `jax.device_count()` |
 | **Get Device Handle** | `device = torch.device("tpu:0")` (or `torch.device("tpu")`) | `device = jax.devices("tpu")[0]` |
+| **Hardware Chip Properties** | `props = torch.tpu.get_device_properties(0)` (`.name`, `.hbm_bytes_per_chip`, `.bf16_flops_per_chip`, `.topology()`) | `device.device_kind`, `device.coords` |
 | **Query Free / Total HBM** | `free_b, total_b = torch.accelerator.get_memory_info(device)` | `stats = device.memory_stats()` (`bytes_in_use`, `bytes_limit`) |
 | **Allocate Directly on TPU** | `x = torch.zeros((1024, 1024), dtype=torch.bfloat16, device=device)` | `x = jnp.zeros((1024, 1024), dtype=jnp.bfloat16)` *(defaults to TPU)* |
 | **Copy Host CPU -> TPU** | `x_tpu = x_cpu.to(device)` | `x_tpu = jax.device_put(x_cpu, device)` |
 | **Copy TPU -> Host CPU** | `x_cpu = x_tpu.cpu()` | `x_cpu = jax.device_get(x_tpu)` |
-| **Wait for TPU Completion** | `torch.accelerator.synchronize()` (or `torch.tpu.synchronize()`) | `x_tpu.block_until_ready()` |
+| **Wait for TPU Completion** | `torch.accelerator.synchronize()` | `x_tpu.block_until_ready()` |
 | **Set Random Seed** | `torch.manual_seed(42)` / `torch.tpu.manual_seed_all(42)` | `key = jax.random.key(42)` |
 
 ### Crucial Philosophical Difference: Mutability & PRNG State

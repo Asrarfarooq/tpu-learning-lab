@@ -98,14 +98,14 @@
           "explanation": "TPU v4 and v5p have 2 TensorCores per physical chip (MegaCore exposes the 2 cores as 1 logical chip to XLA), and GCP's v5p-<N> suffix counts TensorCores. TPU v5e and v6e have 1 TensorCore per physical chip, so v6e-<N> counts chips directly."
         },
         {
-          "question": "Why does our runtime installer (scripts/install_tpu_runtime.sh) run 'pip download' on Cloudtop into .wheelhouse/ and SCP the wheels to the Argolis TPU VM?",
+          "question": "When installing open-source torch_tpu from PyPI on a Cloud TPU VM ('pip install torch_tpu==0.2.0 --extra-index-url https://download.pytorch.org/whl/cpu'), why do we pass '--extra-index-url https://download.pytorch.org/whl/cpu'?",
           "options": [
-            "Because TPU VMs do not have network cards.",
-            "Because torch_tpu wheels are hosted in an internal Artifact Registry (ml-oss-artifacts-transient) requiring @google.com auth, and Argolis security policy prohibits placing corporate @google.com tokens or credentials on external Argolis VMs.",
-            "Because pip is not supported on Ubuntu 22.04."
+            "Because Cloud TPU VMs do not have access to pypi.org.",
+            "So pip resolves the lightweight CPU-only PyTorch wheel (torch+cpu) instead of downloading >2.5 GB of unused NVIDIA CUDA/cuDNN shared libraries from default PyPI, while torch_tpu provides the PJRT TPU backend via libtpu.",
+            "Because torch_tpu runs computations on the host x86 CPU instead of the TPU."
           ],
           "answer": 1,
-          "explanation": "Downloading the wheels locally on Cloudtop and copying the .whl files via gcloud compute tpus tpu-vm scp ensures corporate credentials never leave your Cloudtop while enabling offline installation on the Argolis TPU VM."
+          "explanation": "On Linux x86_64, the default PyTorch wheel on PyPI bundles gigabytes of CUDA/cuDNN libraries. Passing '--extra-index-url https://download.pytorch.org/whl/cpu' installs the lean torch+cpu distribution while torch_tpu and libtpu drive the TPU chips over PCIe/VFIO."
         }
       ]
     }

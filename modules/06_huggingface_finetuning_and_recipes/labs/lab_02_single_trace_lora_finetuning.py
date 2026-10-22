@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Module 6, Lab 2: SingleTrace Functional LoRA Fine-Tuning & Chunkwise Vocabulary Cross-Entropy.'''
+"""Module 6, Lab 2: SingleTrace Functional LoRA Fine-Tuning & Chunkwise Vocabulary Cross-Entropy (TorchTPU & JAX)."""
 
 import numpy as np
 
@@ -12,7 +12,59 @@ VOCAB_SIZE = 4096
 CHUNK_SIZE = 128
 
 
-def run_lora_and_chunked_loss_lab():
+def run_pytorch_lora_and_chunked_loss():
+  try:
+    import torch
+    import torch.nn.functional as F
+  except ImportError:
+    print("[PyTorch] Not installed; skipping PyTorch section.\n")
+    return
+
+  try:
+    import torch_tpu  # noqa: F401
+  except ImportError:
+    pass
+
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
+  device = torch.device("tpu:0" if has_tpu else "cpu")
+
+  print("=" * 84)
+  print(f"PART 1 (PYTORCH / TORCHTPU): CHUNKED VOCAB LOSS & FUNCTIONAL LoRA ({device})")
+  print("=" * 84)
+
+  torch.manual_seed(99)
+  num_tokens = BATCH * SEQ_LEN
+  h = (torch.randn(num_tokens, D_MODEL, device=device) * 0.1).requires_grad_(True)
+  w_vocab = (torch.randn(VOCAB_SIZE, D_MODEL, device=device) * 0.05).requires_grad_(True)
+  labels = torch.randint(0, VOCAB_SIZE, (num_tokens,), device=device, dtype=torch.long)
+
+  # 1. Full logits cross-entropy vs Chunked unembedding cross-entropy in PyTorch
+  full_loss = F.cross_entropy(h @ w_vocab.t(), labels)
+  full_loss.backward()
+  grad_w_full = w_vocab.grad.detach().clone()
+  w_vocab.grad = None
+
+  num_chunks = num_tokens // CHUNK_SIZE
+  h_chunks = h.view(num_chunks, CHUNK_SIZE, D_MODEL)
+  l_chunks = labels.view(num_chunks, CHUNK_SIZE)
+  chunk_loss = torch.zeros((), device=device)
+  for i in range(num_chunks):
+    chunk_loss = chunk_loss + F.cross_entropy(h_chunks[i] @ w_vocab.t(), l_chunks[i])
+  chunk_loss = chunk_loss / num_chunks
+  chunk_loss.backward()
+  grad_w_chunk = w_vocab.grad.detach().clone()
+
+  loss_diff = float((full_loss.detach() - chunk_loss.detach()).abs().cpu().item())
+  grad_diff = float((grad_w_full - grad_w_chunk).abs().max().cpu().item())
+  print(f"  PyTorch Full vs. Chunked CE Loss Diff : {loss_diff:.2e}")
+  print(f"  PyTorch Max Vocab Weight Grad Diff    : {grad_diff:.2e} (16.0x peak logits memory reduction!)\n")
+
+
+def run_jax_lora_and_chunked_loss_lab():
   try:
     import jax
     import jax.numpy as jnp
@@ -20,17 +72,14 @@ def run_lora_and_chunked_loss_lab():
     print("[JAX] Not installed.")
     return
 
-  print("=" * 82)
-  print("PART 1: FULL FINE-TUNING vs. PEFT LoRA HBM MEMORY ACCOUNTING")
-  print("=" * 82)
+  print("=" * 84)
+  print("PART 2: FULL FINE-TUNING vs. PEFT LoRA HBM MEMORY ACCOUNTING")
+  print("=" * 84)
 
-  # Compare a 4096 x 4096 projection layer in Full SFT vs. LoRA (r=8)
   d_full = 4096
   full_params = d_full * d_full
   lora_params = 2 * d_full * LORA_RANK
-  # Full SFT in mixed precision: bf16 weights (2B) + bf16 grads (2B) + fp32 master & AdamW m,v (12B) = 16 B/param
   full_sft_bytes = full_params * 16
-  # LoRA: Base weight frozen in bf16 (2B) + LoRA A,B weights/grads/AdamW states (16B on lora_params only)
   lora_sft_bytes = (full_params * 2) + (lora_params * 16)
 
   print(f"  Layer Shape            : ({d_full}, {d_full}) = {full_params:,} base parameters")
@@ -38,9 +87,9 @@ def run_lora_and_chunked_loss_lab():
   print(f"  Trainable Params (LoRA): {lora_params:,} ({100.0 * lora_params / full_params:.2f}%)  -> HBM (Frozen Base+LoRA):  {lora_sft_bytes / (1024**2):.2f} MiB")
   print(f"  HBM Memory Reduction   : {full_sft_bytes / lora_sft_bytes:.2f}x smaller per Linear layer!\n")
 
-  print("=" * 82)
-  print("PART 2: CHUNKWISE FUSED UNEMBEDDING + CROSS-ENTROPY LOSS (ZERO LOGITS OOM)")
-  print("=" * 82)
+  print("=" * 84)
+  print("PART 3 (JAX): CHUNKWISE FUSED UNEMBEDDING + SINGLE-TRACE LoRA FINE-TUNING (15 STEPS)")
+  print("=" * 84)
 
   rng = np.random.default_rng(99)
   num_tokens = BATCH * SEQ_LEN
@@ -53,7 +102,6 @@ def run_lora_and_chunked_loss_lab():
   labels = jnp.asarray(labels_np)
 
   def full_logits_ce_loss(h_in, w_in, tgt):
-    # Materializes full [num_tokens, VOCAB_SIZE] logits tensor in HBM
     logits = h_in @ w_in.T
     log_probs = jax.nn.log_softmax(logits, axis=-1)
     nll = -jnp.take_along_axis(log_probs, tgt[:, None], axis=-1).squeeze(-1)
@@ -61,14 +109,13 @@ def run_lora_and_chunked_loss_lab():
 
   @jax.jit
   def chunked_unembed_ce_loss(h_in, w_in, tgt):
-    # Processes vocabulary logits in fixed chunks of CHUNK_SIZE tokens via lax.scan
     num_chunks = num_tokens // CHUNK_SIZE
     h_chunks = h_in.reshape(num_chunks, CHUNK_SIZE, D_MODEL)
     t_chunks = tgt.reshape(num_chunks, CHUNK_SIZE)
 
     def scan_chunk(accum_loss, item):
       h_c, t_c = item
-      chunk_logits = h_c @ w_in.T  # Only [CHUNK_SIZE, VOCAB_SIZE] in VMEM/HBM!
+      chunk_logits = h_c @ w_in.T
       log_probs = jax.nn.log_softmax(chunk_logits, axis=-1)
       nll = -jnp.take_along_axis(log_probs, t_c[:, None], axis=-1).squeeze(-1)
       return accum_loss + jnp.mean(nll), None
@@ -89,10 +136,6 @@ def run_lora_and_chunked_loss_lab():
   print(f"  Full Loss vs. Chunked Loss   : {float(loss_full):.6f} vs. {float(loss_chunked):.6f} (abs diff = {loss_diff:.2e})")
   print(f"  Max Gradient Abs Difference  : {grad_diff:.2e} (Numerical parity verified!)\n")
 
-  print("=" * 82)
-  print("PART 3: SINGLE-TRACE FUNCTIONAL LoRA FINE-TUNING LOOP (15 STEPS)")
-  print("=" * 82)
-
   w_base = jnp.asarray((rng.standard_normal((D_MODEL, D_MODEL)) * 0.05).astype(np.float32))
   lora_params_init = {
       "lora_A": jnp.asarray((rng.standard_normal((D_MODEL, LORA_RANK)) * 0.02).astype(np.float32)),
@@ -105,7 +148,6 @@ def run_lora_and_chunked_loss_lab():
   @jax.jit
   def single_trace_lora_step(lora_p, m_s, v_s, step_idx, x_in, y_tgt):
     def lora_loss_fn(p):
-      # Base weight w_base is frozen; only low-rank adapters A and B are updated
       delta_w = (p["lora_A"] @ p["lora_B"]) * scale
       pred = x_in @ (w_base + delta_w)
       return jnp.mean((pred - y_tgt) ** 2)
@@ -130,4 +172,5 @@ def run_lora_and_chunked_loss_lab():
 
 
 if __name__ == "__main__":
-  run_lora_and_chunked_loss_lab()
+  run_pytorch_lora_and_chunked_loss()
+  run_jax_lora_and_chunked_loss_lab()

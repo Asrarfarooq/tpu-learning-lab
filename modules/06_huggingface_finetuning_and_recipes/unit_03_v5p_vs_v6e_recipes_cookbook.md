@@ -62,26 +62,54 @@ from torch.tpu.ops import ragged_dot
 expert_out = ragged_dot(lhs=sorted_tokens, rhs=expert_weights, group_sizes=group_sizes)
 ```
 
-### C. Multi-Slice Hybrid ICI + DCN Mesh (`torch.tpu.topology_aware_mesh`)
-When scaling across multiple TPU slices over Data Center Network (DCN), always construct the PyTorch `DeviceMesh` via `torch.tpu.topology_aware_mesh`:
+### C. Multi-Slice Hybrid ICI + DCN Mesh (`torch.tpu.distributed.topology_aware_mesh`) & Chip Introspection
+In `torch_tpu 0.2.0+` (`torch_tpu/tpu/distributed/`), `torch.tpu.distributed.topology_aware_mesh(mesh_shape=...)` returns a **`torch.Tensor` of optimal global rank IDs** ordered by physical slice and ICI locality. Pass that tensor into `DeviceMesh` with `preserve_rank_order=True`, and combine it with **`torch.tpu.get_device_properties()`** for programmatic hardware-aware mesh sizing:
 
 ```python
-mesh = torch.tpu.topology_aware_mesh(
+import torch
+from torch.tpu.distributed.device_mesh import DeviceMesh
+
+props = torch.tpu.get_device_properties(0)
+# props.name -> 'TPU v6e' | props.hbm_bytes_per_device -> 34359738368 | props.bf16_flops_per_device -> 918e12
+# props.topology() -> e.g. (2, 4, 1) on v6e-8
+
+optimal_rank_tensor = torch.tpu.distributed.topology_aware_mesh(
     mesh_shape=(num_slices, chips_per_slice),
+)
+mesh = DeviceMesh(
+    "tpu",
+    mesh=optimal_rank_tensor,
     mesh_dim_names=("ddp_dcn", "fsdp_ici"),
+    preserve_rank_order=True,
 )
 ```
 
-## 5. Production Recipes Library (`/recipes/` & Sidebar `Recipes` Tab)
+## 5. Open-Source Case Study: FLUX Diffusion Optimization on TPU `v6e` (`1.48x` Speedup)
 
-Switch to the **Recipes** tab in the left sidebar to inspect and run all 5 standalone production scripts in `/usr/local/google/home/asrarfarooq/tpu-learning-lab/recipes/`:
+In `torch_tpu/examples/FLUX_optimization/README.md`, optimizing a FLUX `DoubleStreamBlock` + `SingleStreamBlock` diffusion transformer (`B=2, S=32,768, D=1024, bfloat16`) on a single **`v6e-1`** chip reduced forward latency from **`176.05 ms` to `119.35 ms` (`1.48x` speedup)**. Below is the exact 8-row ablation table measured on `v6e-1`:
 
-1. **`recipes/01_env_and_cache_setup.sh`**: Sets `TORCH_TPU_TIER2_COMPILATION_CACHE`, `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT`, `LIBTPU_INIT_ARGS`, and `python -m torch.tpu.distributed`.
+| Configuration (`examples/FLUX_optimization/README.md`, `v6e-1`, `S=32,768`, `bf16`) | Execution Mode | `v6e-1` Latency (`ms`) | Speedup vs. Baseline | Key Hardware / Compiler Mechanism |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Baseline Reference** (`einops.rearrange` + 5D RoPE + SDPA) | Eager | `176.05 ms` | `1.00x` | `einops` permutes `K=3` to dim 0, triggering a physical `as_strided` copy. |
+| **2. Zero-Copy Views Only** (`.view(B, L, 3, H, D).unbind(dim=2)`) | Eager | `175.39 ms` | `1.00x` | Eliminates the `einops` copy, though eager op dispatch still dominates. |
+| **3. Compile Only** (Unoptimized Baseline Graph) | `torch.compile` | `157.33 ms` | `1.12x` | XLA fuses AdaLN modulation (`silu` + scale/shift/gate) and residuals. |
+| **4. Zero-Copy Views + Compile** | `torch.compile` | `156.56 ms` | `1.12x` | Clean view decomposition (`slice` / `reshape`) inside StableHLO. |
+| **5. Zero-Copy + Fused 2D RoPE + Compile** (Standard SDPA) | `torch.compile` | `151.27 ms` | `1.16x` | Replaces 5D `2x2` matrix RoPE with 2D `[cos, sin]` VPU FMA (cuts RoPE HBM traffic by 50%). |
+| **6. Standalone SplashAttention** | Eager | `147.50 ms` | `1.19x` | Pallas `splash_sdpa` (`block_q=2048, block_kv=2048`) tiles $32\text{K}\times 32\text{K}$ attention in VMEM. |
+| **7. Zero-Copy + Fused 2D RoPE + SplashAttention** | Eager | `153.60 ms` | `1.15x` | Uncompiled 2D RoPE launches multiple small eager VPU ops before `splash_sdpa`. |
+| **8. Fully Optimized (Zero-Copy + Fused 2D RoPE + SplashAttention + Compile)** | **`torch.compile`** | **`119.35 ms`** | **`1.48x`** | **Full fusion of 2D RoPE + AdaLN + Pallas `splash_sdpa` in a single XLA graph!** |
+
+## 6. Production Recipes Library (`/recipes/` & Sidebar `Recipes` Tab)
+
+Switch to the **Recipes** tab in the left sidebar to inspect and run all 6 standalone production scripts in `/usr/local/google/home/asrarfarooq/tpu-learning-lab/recipes/`:
+
+1. **`recipes/01_env_and_cache_setup.sh`**: Sets `TORCH_TPU_TIER2_COMPILATION_CACHE`, `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT`, and `python -m torch.tpu.distributed`.
 2. **`recipes/02_hf_llm_prefill_decode_benchmark.py`**: Hugging Face `AutoModelForCausalLM` (`Qwen3`, `Llama-3.2`, `Gemma-2`) benchmark with `StaticCache`, 4D causal mask, `SDPBackend.OVERRIDEABLE`, and `torch.tpu._get_cache_misses()` verification.
-3. **`recipes/03_single_trace_and_lora_sft_recipe.py`**: SFT / LoRA training template combining `SingleTraceTrainer` (`fullgraph=True`), `patch_optimizer_graph_breaks()`, and chunkwise vocabulary cross-entropy loss.
+3. **`recipes/03_single_trace_and_lora_sft_recipe.py`**: SFT / LoRA training template using the public **`from torch.tpu import optimizers`** (`optimizers.SingleTraceTrainer`, `optimizers.AdamW`, `optimizers.Muon`) and chunkwise vocabulary cross-entropy loss.
 4. **`recipes/04_fp8_scaled_mm_and_quant_benchmark.py`**: Benchmarks `torch._scaled_mm` (`float8_e4m3fn` TensorWise and RowWise scaling) vs. `bfloat16` and `torch.tpu.Precision` modes.
 5. **`recipes/05_ragged_moe_qwen_gemma_benchmark.py`**: Benchmarks zero-graph-break Mixture-of-Experts routing (`torch.tpu.ops.ragged_dot` + `scatter_add_`) against naive expert loops.
+6. **`recipes/06_flux_and_distributed_tp_fsdp.py`**: Benchmarks the OSS `torch_tpu 0.2.0` FLUX Diffusion optimizations (Zero-Copy QKV Unbind + Algebraic 2D RoPE + `splash_sdpa`) and declarative `DTensor` `ColwiseParallel`/`RowwiseParallel` + `SimpleFSDP` patterns.
 
-## 6. Guided Hands-On Lab (`labs/lab_03_v5p_vs_v6e_recipe_advisor.py`)
+## 7. Guided Hands-On Lab (`labs/lab_03_v5p_vs_v6e_recipe_advisor.py`)
 
 Run `labs/lab_03_v5p_vs_v6e_recipe_advisor.py` in the right-hand lab editor to calculate exact HBM capacity, minimum chip topology (`v6e-1`, `v6e-4`, `v6e-8`, `v5p-8`), and Roofline latency across `Qwen3-0.6B`, `Llama-3.2-1B`, `Gemma-2-2B`, `Llama-3.1-8B`, `Qwen3-30B-A3B`, and `Llama-3.1-70B`.

@@ -13,22 +13,8 @@ A CPU or GPU core is an instruction-fetching processor: for every fused multiply
 
 Google's TPU **Matrix Multiply Unit (MXU)** eliminates register-file read/write overhead during matrix multiplication by using a **2D Systolic Array**:
 
-```
-           Weight Matrix W (Pre-loaded / Stationary in MXU)
-                 Col 0          Col 1          Col 2  ..127/255
-               +--------------+--------------+--------------+
-Act Row 0 ---->| W[0,0]       | W[0,1]       | W[0,2]       |
-streams right  | Acc += X*W   | Acc += X*W   | Acc += X*W   |
-               +------+-------+------+-------+------+-------+
-                      |              |              |  Partial sums
-                      v              v              v  flow down
-Act Row 1 ---->+--------------+--------------+--------------+
-streams right  | W[1,0]       | W[1,1]       | W[1,2]       |
-               | Acc += X*W   | Acc += X*W   | Acc += X*W   |
-               +------+-------+------+-------+------+-------+
-                      |              |              |
-                      v              v              v
-                 Out Y[:,0]     Out Y[:,1]     Out Y[:,2] (fp32)
+```schematic
+mxu-systolic-array
 ```
 
 ### How the Systolic Array Achieves Massive Density
@@ -47,32 +33,8 @@ $$\text{Value} = (-1)^{\text{sign}} \times 2^{(\text{exponent} - \text{bias})} \
 * **Exponent bits** determine the **dynamic range** (how large or small a number can be before overflowing to `Inf` or underflowing to `0.0`, which destroys tiny neural network gradients).
 * **Mantissa (fraction) bits** determine the **fine-grained precision** (how many significant decimal digits are preserved).
 
-```
-IEEE float32 (32 bits = 4 bytes):
-+---+----------------------+------------------------------------------+
-| S | Exponent (8 bits)    | Mantissa / Fraction (23 bits)            |
-| 1 | Range: ~1e-38..3e38  | ~7.2 decimal digits of precision         |
-+---+----------------------+------------------------------------------+
-
-IEEE float16 / FP16 (16 bits = 2 bytes):
-+---+---------------+------------------------------+
-| S | Exp (5 bits)  | Mantissa (10 bits)           |
-| 1 | Max: 65,504!  | ~3.3 decimal digits          |
-+---+---------------+------------------------------+
-  ^-- Gradients underflow/overflow > 65,504 (needs GradScaler)
-
-Google bfloat16 / BF16 (16 bits = 2 bytes):
-+---+----------------------+---------------------+
-| S | Exponent (8 bits)    | Mantissa (7 bits)   |
-| 1 | Range: ~1e-38..3e38  | ~2.4 decimal digits |
-+---+----------------------+---------------------+
-  ^-- Same 8-bit exponent range as float32! Zero loss-scaling needed.
-
-FP8 E4M3fn / E5M2 (8 bits = 1 byte, supported on v5p & v6e MXU):
-+---+-------------+---------------+   +---+-------------+-------------+
-| S | Exp (4b)    | Mantissa (3b) |   | S | Exp (5b)    | Mant (2b)   |
-| 1 | Max: 448    | Weights / Act |   | 1 | Max: 57,344 | Gradients   |
-+---+-------------+---------------+   +---+-------------+-------------+
+```schematic
+floating-point-bit-layouts
 ```
 
 ### Why the MXU Multiplies in `bfloat16` / `fp8` and Accumulates in `float32`
@@ -110,6 +72,19 @@ if hasattr(torch, "tpu") and hasattr(torch.tpu, "precision"):
     with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
         y_exact = a_fp32 @ b_fp32
 ```
+
+### Preserving FP32 MXU Accumulators (`out_dtype=torch.float32` & `allow_excess_precision`)
+Even when inputs are `bfloat16`, the TPU MXU hardware accumulates inner dot products in **full `float32`** before downcasting the final result back to `bfloat16` at the array boundary. Per `docs/numerical_precision.md`, TorchTPU exposes two key controls over this accumulator behavior:
+
+1. **Direct FP32 Accumulator Readout (`out_dtype=torch.float32`)**:
+   In numerically sensitive layers (such as the final `lm_head` vocabulary projection or attention logit computation), casting `bfloat16` inputs to `float32` *before* `torch.mm` triggers slower multi-pass emulation or extra HBM bandwidth. Instead, pass `out_dtype=torch.float32` to `torch.mm` or `torch.bmm` to run a **1-pass `bfloat16` MXU matmul while reading out the native `float32` MXU accumulator directly**:
+   ```python
+   # Runs at full 1-pass bfloat16 MXU speed (918 TFLOP/s on v6e) and returns exact float32 accumulators!
+   logits_fp32 = torch.mm(hidden_bf16, lm_head_weight_bf16.t(), out_dtype=torch.float32)
+   ```
+2. **Controlling Fused Epilogue Excess Precision (`torch.tpu.allow_excess_precision`)**:
+   When XLA fuses elementwise operations (like bias add or residual add) into the epilogue of a `bfloat16` matmul, XLA can either round the matmul output to `bfloat16` immediately (strict PyTorch eager semantics, `torch.tpu.allow_excess_precision = False`, the default) or keep the intermediate value in `float32` across the fused epilogue (`torch.tpu.allow_excess_precision = True`).
+   > **Warning — Locked on First Compile:** `torch.tpu.allow_excess_precision` is **locked permanently on the first `torch.compile()` invocation** in a process. Attempting to mutate `torch.tpu.allow_excess_precision` after any graph has been compiled raises a `RuntimeError`. Always configure it at the very top of your entrypoint script.
 
 #### JAX
 ```python

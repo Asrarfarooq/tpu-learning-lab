@@ -63,9 +63,14 @@ def train_pytorch(x_np, y_np):
 
   try:
     import torch_tpu  # noqa: F401
-    device = torch.device("tpu:0" if hasattr(torch, "tpu") and torch.tpu.is_available() else "cpu")
   except ImportError:
-    device = torch.device("cpu")
+    pass
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
+  device = torch.device("tpu:0" if has_tpu else "cpu")
 
   print("=" * 76)
   print(f"PART 2: PYTORCH TRAINING LOOP (device={device})")

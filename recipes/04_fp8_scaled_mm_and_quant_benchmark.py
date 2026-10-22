@@ -12,26 +12,40 @@ Verified against `//depot/google3/third_party/py/torch_tpu/`:
 """
 
 import time
-import torch
+import numpy as np
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+    torch = None
 
 try:
     import torch_tpu  # noqa: F401
-    HAS_TPU = torch.tpu.is_available()
 except ImportError:
-    HAS_TPU = False
+    pass
+HAS_TPU = (
+    HAS_TORCH
+    and hasattr(torch, "accelerator")
+    and torch.accelerator.is_available()
+    and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+)
 
 
-def get_device() -> torch.device:
+def get_device():
     return torch.device("tpu") if HAS_TPU else torch.device("cpu")
 
 
 def sync_device() -> None:
     if HAS_TPU:
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
 
 
-def quantize_fp8_tensorwise(x: torch.Tensor, fp8_dtype=torch.float8_e4m3fn):
+def quantize_fp8_tensorwise(x, fp8_dtype=None):
     """Quantizes a 2D tensor to FP8 with a single scalar float32 scale."""
+    if fp8_dtype is None:
+        fp8_dtype = torch.float8_e4m3fn
     fp8_max = torch.finfo(fp8_dtype).max  # 448.0 for e4m3fn, 57344.0 for e5m2
     amax = x.float().abs().amax().clamp(min=1e-12)
     scale = (amax / fp8_max).to(torch.float32)
@@ -39,8 +53,10 @@ def quantize_fp8_tensorwise(x: torch.Tensor, fp8_dtype=torch.float8_e4m3fn):
     return x_fp8, scale
 
 
-def quantize_fp8_rowwise(x: torch.Tensor, dim: int, fp8_dtype=torch.float8_e4m3fn):
+def quantize_fp8_rowwise(x, dim: int, fp8_dtype=None):
     """Quantizes a 2D tensor along `dim` for RowWise `torch._scaled_mm`."""
+    if fp8_dtype is None:
+        fp8_dtype = torch.float8_e4m3fn
     fp8_max = torch.finfo(fp8_dtype).max
     amax = x.float().abs().amax(dim=dim, keepdim=True).clamp(min=1e-12)
     scale = (amax / fp8_max).to(torch.float32)
@@ -49,6 +65,16 @@ def quantize_fp8_rowwise(x: torch.Tensor, dim: int, fp8_dtype=torch.float8_e4m3f
 
 
 def run_fp8_and_precision_benchmark() -> None:
+    if not HAS_TORCH:
+        import jax
+        import jax.numpy as jnp
+        print("Running JAX FP8 E4M3fn & MXU Precision Fallback Benchmark on", jax.default_backend())
+        rng = np.random.default_rng(42)
+        x = jnp.asarray(rng.standard_normal((512, 512), dtype=np.float32))
+        w = jnp.asarray(rng.standard_normal((512, 512), dtype=np.float32))
+        out_fp8 = jnp.matmul(x.astype(jnp.float8_e4m3fn), w.astype(jnp.float8_e4m3fn), preferred_element_type=jnp.bfloat16)
+        print("JAX float8_e4m3fn DotGeneral output shape:", out_fp8.shape, "dtype:", out_fp8.dtype)
+        return
     device = get_device()
     M, K, N = (1024, 2048, 2048) if HAS_TPU else (512, 512, 512)
     flops_per_matmul = 2 * M * K * N

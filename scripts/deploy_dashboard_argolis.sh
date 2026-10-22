@@ -4,13 +4,15 @@
 set -euo pipefail
 
 PROJECT_ID="torchtpu-learning-lab"
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 REGION="${1:-us-central1}"
 SERVICE_NAME="torchtpu-learning-lab"
 ARGOLIS_USER="asrarfarooq@gcp.altostrat.com"
 
 export CLOUDSDK_CORE_PROJECT="${PROJECT_ID}"
 
-echo "[1/3] Enabling Cloud Run, Cloud Build, and Artifact Registry APIs on ${PROJECT_ID}..."
+echo "[1/4] Enabling Cloud Run, Cloud Build, and Artifact Registry APIs on ${PROJECT_ID}..."
 gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
@@ -18,7 +20,15 @@ gcloud services enable \
   iap.googleapis.com \
   --project="${PROJECT_ID}"
 
-echo "[2/3] Deploying ${SERVICE_NAME} to Cloud Run (${REGION}) with --no-allow-unauthenticated..."
+echo "[2/4] Granting Cloud Build source-deploy roles to ${COMPUTE_SA}..."
+for ROLE in roles/cloudbuild.builds.builder roles/storage.objectAdmin roles/artifactregistry.writer roles/logging.logWriter; do
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${COMPUTE_SA}" \
+    --role="${ROLE}" \
+    --quiet >/dev/null
+done
+
+echo "[3/4] Deploying ${SERVICE_NAME} to Cloud Run (${REGION}) with --no-allow-unauthenticated..."
 gcloud run deploy "${SERVICE_NAME}" \
   --source=. \
   --project="${PROJECT_ID}" \
@@ -26,9 +36,10 @@ gcloud run deploy "${SERVICE_NAME}" \
   --no-allow-unauthenticated \
   --memory=2Gi \
   --cpu=2 \
-  --set-env-vars="TPU_LAB_PROJECT=${PROJECT_ID},CLOUDSDK_CORE_PROJECT=${PROJECT_ID}"
+  --set-env-vars="TPU_LAB_PROJECT=${PROJECT_ID},CLOUDSDK_CORE_PROJECT=${PROJECT_ID}" \
+  --quiet
 
-echo "[3/3] Granting roles/run.invoker exclusively to ${ARGOLIS_USER}..."
+echo "[4/4] Granting roles/run.invoker exclusively to ${ARGOLIS_USER}..."
 gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
   --project="${PROJECT_ID}" \
   --region="${REGION}" \

@@ -12,21 +12,14 @@ By the end of this unit, you will be able to:
 
 Every deep learning workload—from a 4-parameter linear regression model to a 400-billion-parameter Transformer—is an iterative optimization loop over four steps:
 
-```
-   +------------------------------------------------------------------------+
-   |                        ONE TRAINING ITERATION                          |
-   |                                                                        |
-   |  [Input Batch X] ---> (1. Forward Pass: Y_hat = f(X; W, b))            |
-   |                                   |                                    |
-   |                                   v                                    |
-   |  [True Labels Y] ---> (2. Loss Function: L = Mean((Y_hat - Y)^2))      |
-   |                                   |                                    |
-   |                                   v                                    |
-   |                       (3. Backward Pass: Compute dL/dW, dL/db)         |
-   |                                   |                                    |
-   |                                   v                                    |
-   |                       (4. Optimizer Step: W <- W - lr * dL/dW)         |
-   +------------------------------------------------------------------------+
+```mermaid
+flowchart TD
+    X["Input Batch X [N, D]"] --> FWD["1. Forward Pass: Y_hat = X @ W + b"]
+    Y["Ground-Truth Targets Y [N, 1]"] --> LOSS["2. Loss Evaluation: L = Mean((Y_hat - Y)²)"]
+    FWD --> LOSS
+    LOSS --> BWD["3. Backward Pass (Reverse-Mode Autodiff): Compute dL/dW, dL/db"]
+    BWD --> OPT["4. Optimizer Step: W ← W - lr · dL/dW (in-place or tree_map)"]
+    OPT -. "Next Training Step" .-> FWD
 ```
 
 ### Detailed Breakdown of Each Step

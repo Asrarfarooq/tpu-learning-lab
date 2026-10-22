@@ -15,6 +15,7 @@
   <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/python.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/bash.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -107,7 +108,7 @@
       <div class="sidebar-header">
         <div class="sidebar-tabs" role="tablist">
           <button id="sidebar-tab-modules" class="sidebar-tab active" type="button" role="tab">Modules (7)</button>
-          <button id="sidebar-tab-recipes" class="sidebar-tab" type="button" role="tab">Recipes (5)</button>
+          <button id="sidebar-tab-recipes" class="sidebar-tab" type="button" role="tab">Recipes (6)</button>
         </div>
         <input id="sidebar-search-input" class="sidebar-search-input" type="search" placeholder="Filter units or recipes..." aria-label="Filter units or recipes">
       </div>
@@ -128,9 +129,14 @@
 
       <div class="editorial-grid">
         <div class="reading-column">
+          <ol id="unit-stages-bar" class="unit-stages" aria-label="Module Units Progress"></ol>
           <header class="chapter-header">
-            <h1 id="unit-main-title" class="chapter-title"></h1>
-            <p id="unit-module-desc" class="chapter-dek"></p>
+            <canvas id="chapter-hero-canvas" class="chapter-hero-canvas" aria-hidden="true"></canvas>
+            <div class="chapter-header-inner">
+              <div id="unit-eyebrow" class="chapter-eyebrow"></div>
+              <h1 id="unit-main-title" class="chapter-title"></h1>
+              <p id="unit-module-desc" class="chapter-dek"></p>
+            </div>
           </header>
 
           <section id="interactive-widget-mount" class="interactive-figure-mount"></section>

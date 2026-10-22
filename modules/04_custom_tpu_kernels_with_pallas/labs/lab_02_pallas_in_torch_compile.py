@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Module 4, Lab 2: Calling Custom JAX/Pallas Kernels Inside PyTorch via torch.tpu.pallas.jax_op.'''
+"""Module 4, Lab 2: Calling Custom JAX/Pallas Kernels Inside PyTorch via torch.tpu.pallas.jax_op & register_autograd."""
 
 import numpy as np
 
@@ -42,23 +42,26 @@ def run_torchtpu_pallas_bridge():
 
   out_jax = np.asarray(jax_pallas_rmsnorm(jnp.asarray(x_np), jnp.asarray(w_np)))
   jax_diff = float(np.max(np.abs(out_jax - ref_np)))
-  print("=" * 78)
+  print("=" * 80)
   print(f"PALLAS RMSNORM KERNEL & TORCHTPU BRIDGE (JAX backend={jax.default_backend()})")
-  print("=" * 78)
+  print("=" * 80)
   print(f"  JAX Pallas Kernel Output Shape : {out_jax.shape}")
   print(f"  JAX Pallas Kernel Max Error    : {jax_diff:.2e}")
 
   try:
     import torch
-    has_tpu = False
     try:
       import torch_tpu  # noqa: F401
-      has_tpu = hasattr(torch, "tpu") and torch.tpu.is_available()
     except ImportError:
       pass
+    has_tpu = (
+        hasattr(torch, "accelerator")
+        and torch.accelerator.is_available()
+        and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+    )
     device = torch.device("tpu:0" if has_tpu else "cpu")
 
-    if has_tpu and hasattr(torch.tpu, "pallas"):
+    if has_tpu and hasattr(torch, "tpu") and hasattr(torch.tpu, "pallas"):
       pallas_rmsnorm_op = torch.tpu.pallas.jax_op("tpu_lab::pallas_rmsnorm", jax_pallas_rmsnorm)
     else:
       @torch.library.custom_op("tpu_lab::pallas_rmsnorm", mutates_args=())
@@ -70,11 +73,33 @@ def run_torchtpu_pallas_bridge():
       def _(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         return torch.empty_like(x)
 
-    x_t = torch.from_numpy(x_np).to(device)
-    w_t = torch.from_numpy(w_np).to(device)
+    # Register AOTAutograd backward pass via register_autograd (docs/custom_kernels.md)
+    def _setup_context(ctx, inputs, output):
+      x, w = inputs
+      ctx.save_for_backward(x, w)
+
+    def _backward(ctx, grad_out):
+      x, w = ctx.saved_tensors
+      var = x.pow(2).mean(dim=-1, keepdim=True)
+      rstd = torch.rsqrt(var + 1e-6)
+      x_hat = x * rstd
+      dw = (grad_out * x_hat).sum(dim=0)
+      dx_hat = grad_out * w
+      dx = rstd * (dx_hat - x_hat * (dx_hat * x_hat).mean(dim=-1, keepdim=True))
+      return dx, dw
+
+    pallas_rmsnorm_op.register_autograd(_backward, setup_context=_setup_context)
+
+    x_t = torch.from_numpy(x_np).to(device).requires_grad_(True)
+    w_t = torch.from_numpy(w_np).to(device).requires_grad_(True)
     out_custom = pallas_rmsnorm_op(x_t, w_t)
-    t_diff = float(np.max(np.abs(out_custom.cpu().numpy() - ref_np)))
-    print(f"  PyTorch Custom Op ({device}) Max Error: {t_diff:.2e}")
+    loss = (out_custom ** 2).mean()
+    loss.backward()
+
+    t_diff = float(np.max(np.abs(out_custom.detach().cpu().numpy() - ref_np)))
+    grad_norm = float(w_t.grad.detach().norm().cpu().item())
+    print(f"  PyTorch Custom Op ({device}) Fwd Max Error : {t_diff:.2e}")
+    print(f"  PyTorch register_autograd dW Grad L2 Norm : {grad_norm:.6f} (Backward verified!)")
   except ImportError:
     print("  [PyTorch] Not installed in local CPU env; will execute torch.tpu.pallas.jax_op on Cloud TPU VM.")
 

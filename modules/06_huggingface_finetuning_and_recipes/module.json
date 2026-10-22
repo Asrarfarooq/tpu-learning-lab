@@ -47,7 +47,7 @@
             "SingleTraceTrainer moves the optimizer to the Host CPU."
           ],
           "answer": 0,
-          "explanation": "SingleTraceTrainer (torch_tpu.extras.optimizers.single_trace_trainer) traces forward, loss, reverse-mode autodiff (torch.func.grad_and_value), and functional AdamW/SGD/Muon updates into one unified FX graph with zero graph breaks and static buffer donation."
+          "explanation": "SingleTraceTrainer (torch.tpu.optimizers.SingleTraceTrainer) traces forward, loss, reverse-mode autodiff (torch.func.grad_and_value), and functional AdamW/Sgd/Muon updates (torch.tpu.optimizers) into one unified FX graph with zero graph breaks and static buffer donation."
         },
         {
           "question": "When fine-tuning a large-vocabulary LLM (such as Gemma with vocab_size=256,000 or Qwen3 with vocab_size=151,936) at long sequence lengths, what prevents HBM Out-Of-Memory (OOM) errors at the LM head?",

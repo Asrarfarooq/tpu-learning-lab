@@ -6,7 +6,7 @@ import sys
 
 def task_1_hardware_discovery():
   print("=" * 76)
-  print("TASK 1: HARDWARE & RUNTIME DISCOVERY")
+  print("TASK 1: HARDWARE & RUNTIME DISCOVERY (OSS torch_tpu 0.2.0+ & JAX)")
   print("=" * 76)
   print(f"Python executable : {sys.executable}")
   print(f"Python version    : {sys.version.split()[0]}")
@@ -14,20 +14,33 @@ def task_1_hardware_discovery():
   torch_ctx = {"available": False, "device": "cpu"}
   try:
     import torch
-    has_tpu = False
     try:
       import torch_tpu  # noqa: F401
-      has_tpu = hasattr(torch, "tpu") and torch.tpu.is_available()
     except ImportError:
       pass
 
+    # Stable PyTorch 2.11+ / torch_tpu 0.2.0+ device discovery via torch.accelerator
+    has_tpu = (
+        hasattr(torch, "accelerator")
+        and torch.accelerator.is_available()
+        and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+    )
+
     dev_str = "tpu:0" if has_tpu else "cpu"
-    dev_count = torch.tpu.device_count() if has_tpu else 1
+    dev_count = torch.accelerator.device_count() if has_tpu else 1
     torch_ctx = {"available": True, "device": dev_str, "has_tpu": has_tpu}
     print(f"[PyTorch] version={torch.__version__} | device={dev_str} | device_count={dev_count}")
-    if has_tpu and hasattr(torch, "accelerator") and hasattr(torch.accelerator, "get_memory_info"):
-      free_b, total_b = torch.accelerator.get_memory_info(dev_str)
-      print(f"[PyTorch] TPU HBM Free: {free_b / (1024**3):.2f} GiB / Total: {total_b / (1024**3):.2f} GiB")
+    if has_tpu:
+      if hasattr(torch, "tpu") and hasattr(torch.tpu, "get_device_properties"):
+        props = torch.tpu.get_device_properties(0)
+        print(
+            f"[PyTorch] TPU Chip: {props.name} | topology={props.topology()} | "
+            f"HBM/device={props.hbm_bytes_per_device / (1024**3):.1f} GiB | "
+            f"bf16 peak={props.bf16_flops_per_device / 1e12:.1f} TFLOPs"
+        )
+      if hasattr(torch.accelerator, "get_memory_info"):
+        free_b, total_b = torch.accelerator.get_memory_info(dev_str)
+        print(f"[PyTorch] TPU HBM Free: {free_b / (1024**3):.2f} GiB / Total: {total_b / (1024**3):.2f} GiB")
   except ImportError:
     print("[PyTorch] Not installed in this environment.")
 

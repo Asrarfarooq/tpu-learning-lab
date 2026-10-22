@@ -18,17 +18,30 @@ The Verified TorchTPU `ragged_dot` Solution:
 3. Execute all experts in ONE fused XLA `ragged_dot` kernel (`gate_up` + SwiGLU + `down`).
 """
 
+from __future__ import annotations
 import time
-import torch
-import torch.nn.functional as F
+
+try:
+    import torch
+    import torch.nn.functional as F
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+    torch = None
+    F = None
 
 try:
     import torch_tpu  # noqa: F401
     from torch.tpu.ops import ragged_dot
-    HAS_TPU = torch.tpu.is_available()
 except ImportError:
-    HAS_TPU = False
     ragged_dot = None
+
+HAS_TPU = (
+    HAS_TORCH
+    and hasattr(torch, "accelerator")
+    and torch.accelerator.is_available()
+    and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+)
 
 
 def get_device() -> torch.device:
@@ -37,7 +50,7 @@ def get_device() -> torch.device:
 
 def sync_device() -> None:
     if HAS_TPU:
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
 
 
 def ragged_dot_reference(lhs: torch.Tensor, rhs: torch.Tensor, group_sizes: torch.Tensor) -> torch.Tensor:
@@ -126,6 +139,16 @@ def ragged_moe_forward(
 
 
 def main() -> None:
+    if not HAS_TORCH:
+        import jax
+        import jax.numpy as jnp
+        print("Running JAX lax.ragged_dot fallback verification on", jax.default_backend())
+        lhs = jnp.ones((64, 128), dtype=jnp.float32)
+        rhs = jnp.ones((4, 128, 256), dtype=jnp.float32) * 0.05
+        group_sizes = jnp.array([16, 16, 16, 16], dtype=jnp.int32)
+        out = jax.lax.ragged_dot(lhs, rhs, group_sizes)
+        print("jax.lax.ragged_dot output shape:", out.shape)
+        return
     device = get_device()
     dtype = torch.bfloat16
     num_tokens = 512

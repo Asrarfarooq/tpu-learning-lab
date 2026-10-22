@@ -11,12 +11,15 @@ def benchmark_pytorch_host_stalls():
     print("[PyTorch] Not installed; skipping.")
     return
 
-  has_tpu = False
   try:
     import torch_tpu  # noqa: F401
-    has_tpu = hasattr(torch, "tpu") and torch.tpu.is_available()
   except ImportError:
     pass
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
 
   device = torch.device("tpu:0" if has_tpu else "cpu")
   print("=" * 78)
@@ -57,7 +60,13 @@ def benchmark_pytorch_host_stalls():
   async_ms = (time.perf_counter() - t0) * 1e3
 
   print(f"  [Anti-Pattern: Per-Step .item() Sync] 40 Steps Total: {stalled_ms:7.2f} ms")
-  print(f"  [Best Practice: Detached Accumulator] 40 Steps Total: {async_ms:7.2f} ms\n")
+  print(f"  [Best Practice: Detached Accumulator] 40 Steps Total: {async_ms:7.2f} ms")
+
+  # Demonstrate TorchTPU Memory Model: UntypedStorage sharing across views
+  base_t = torch.randn((64, 128), device=device)
+  view_t = base_t.transpose(0, 1)
+  shares_storage = base_t.untyped_storage().data_ptr() == view_t.untyped_storage().data_ptr()
+  print(f"  [TorchTPU Memory Model] View shares UntypedStorage with base tensor: {shares_storage}\n")
 
 
 def benchmark_jax_lax_scan():

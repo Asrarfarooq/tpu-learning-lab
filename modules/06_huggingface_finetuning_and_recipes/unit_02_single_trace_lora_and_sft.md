@@ -3,7 +3,7 @@
 ## 1. Learning Objectives & Production Context
 
 By the end of this unit, you will be able to:
-1. Diagnose why standard PyTorch `loss.backward()` + `optimizer.step()` causes graph breaks under `torch.compile`, and eliminate them using **`SingleTraceTrainer`** (`torch_tpu.extras.optimizers.single_trace_trainer`) or **`patch_optimizer_graph_breaks()`**.
+1. Diagnose why standard PyTorch `loss.backward()` + `optimizer.step()` causes graph breaks under `torch.compile`, and eliminate them using the official public **`torch.tpu.optimizers`** API (**`optimizers.SingleTraceTrainer`**, **`optimizers.AdamW`**, **`optimizers.Muon`**, **`optimizers.Sgd`**) or **`patch_optimizer_graph_breaks()`**.
 2. Configure **PEFT LoRA (`peft.LoraConfig`)** for Supervised Fine-Tuning (SFT) on TorchTPU with fixed-length padding (`padding="max_length"`), `lora_dropout=0.0`, and `num_workers=0`.
 3. Implement **Chunkwise Fused Unembedding + Cross-Entropy Loss** (`ChunkwiseFusedUnembedCrossEntropyLoss`) to prevent multi-gigabyte `[batch, seq_len, vocab_size]` logits OOMs on large-vocabulary models (`Gemma` 256k vocab, `Qwen3` 152k vocab).
 
@@ -21,31 +21,34 @@ print("Graph breaks:", explanation.graph_break_count)
 
 On Gemma-4 (`google/examples/gemma4/gemma4_tutorial.md`), an uncompiled/broken optimizer step stalls the host CPU for **`712 ms` per step** out of an `882 ms` total step time! TorchTPU provides two verified patterns to fuse **`Forward + Loss + Backward + Optimizer`** into a **single unbroken XLA compilation**:
 
-| Pattern | TorchTPU API | How It Works | When to Use |
+| Pattern | TorchTPU Public API (`0.2.0+`) | How It Works | When to Use |
 | :--- | :--- | :--- | :--- |
-| **Pattern A: `SingleTraceTrainer`** | `from torch_tpu.extras.optimizers import single_trace_trainer, adamw` | Uses `torch.func.grad_and_value` + functional optimizer (`TorchAdamw` / `ReferenceAdamw` / `TorchMuon`) + `make_fx` to capture `FWD+BWD+OPT` into 1 graph with `fullgraph=True` and input buffer donation. | **Gold standard** for maximum single-device throughput and `bfloat16` optimizer moments (`perflab/steps/train.py`). |
-| **Pattern B: Optimizer Graph-Break Patch** | `from torch_tpu._internal.optim.patch import patch_optimizer_graph_breaks` + `from torch_tpu._internal.optim.adamw import AdamW` | Strips the graph-breaking decorator from `Optimizer.step` and eagerly pre-initializes `exp_avg` / `exp_avg_sq` on step 0 so `@torch.compile` traces the full training step. | When using standard imperative `loss.backward()` + `optimizer.step()` loops or FSDPv2. |
+| **Pattern A: `SingleTraceTrainer`** | `from torch.tpu import optimizers` (`optimizers.SingleTraceTrainer`, `optimizers.AdamW`, `optimizers.Muon`, `optimizers.Sgd`) | Uses `torch.func.grad_and_value` + functional optimizer (`AdamW` / `Muon` / `Sgd`) + `make_fx` to capture `FWD+BWD+OPT` into 1 graph with `fullgraph=True`, input buffer donation, tied-weights deduplication (`tie_weights=True`), `DTensor` unwrapping (`SimpleFSDP`), and automatic Hugging Face `transformers.masking_utils.is_tracing` patching. | **Gold standard** for maximum single-device and `SimpleFSDP` throughput with `bfloat16` optimizer moments. |
+| **Pattern B: Optimizer Graph-Break Patch** | `from torch_tpu._internal.optim.patch import patch_optimizer_graph_breaks` | Strips the graph-breaking decorator from `Optimizer.step` and eagerly pre-initializes `exp_avg` / `exp_avg_sq` on step 0 so `@torch.compile` traces the full training step. | When using standard imperative `loss.backward()` + `optimizer.step()` loops or FSDPv2. |
 
-### Complete `SingleTraceTrainer` Recipe (`docs/source/advanced_compile.py`)
+### Complete `torch.tpu.optimizers.SingleTraceTrainer` Recipe (`docs/public_apis.md`)
 
 ```python
 import torch
-from torch_tpu.extras.optimizers import adamw, single_trace_trainer
+from torch.tpu import optimizers
 
 with torch.device("tpu"):
     model = MyTransformerModel().to(torch.bfloat16)
 
-# Initialize SingleTraceTrainer with functional AdamW (supports bfloat16 moments!)
-trainer = single_trace_trainer.SingleTraceTrainer(
+# Initialize SingleTraceTrainer with public functional AdamW (or optimizers.Muon / optimizers.Sgd)
+# Note: optimizers.Muon(lr=1e-3, ns_steps=5, adjust_lr_fn="match_rms_adamw") runs 5-step Newton-Schulz
+# orthogonalization on 2D hidden weights (requires unsharded 2D params; _SUPPORTS_SHARDED_PARAMS=False).
+trainer = optimizers.SingleTraceTrainer(
     model=model,
-    optimizer=adamw.TorchAdamw(lr=1e-4, weight_decay=0.01, use_bfloat16_moments=True),
+    optimizer=optimizers.AdamW(lr=1e-4, weight_decay=0.01, use_bfloat16_moments=True),
+    compile_fn=lambda gm, example_inputs: torch.compile(gm, backend="tpu", fullgraph=True),
 )
 
-# Compiles Forward + Loss + Backward + AdamW into ONE XLA executable (0 graph breaks)
-compiled_train_step = trainer.make_compiled_train_step(example_inputs=sample_inputs)
+# Returns a lazy single-trace step function that compiles FWD + Loss + BWD + OPT on its first call (0 graph breaks)
+compiled_train_step = trainer.make_compiled_train_step()
 
-for step, batch in enumerate(dataloader):
-    loss = compiled_train_step(batch)
+for step, (inputs, targets) in enumerate(dataloader):
+    loss = compiled_train_step(inputs, targets)
 ```
 
 ## 3. Production PEFT LoRA Fine-Tuning Checklist on TorchTPU

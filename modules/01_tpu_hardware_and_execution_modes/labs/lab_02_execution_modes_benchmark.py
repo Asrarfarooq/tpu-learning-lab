@@ -17,19 +17,22 @@ def benchmark_pytorch():
     print("[PyTorch] Not installed; skipping.")
     return
 
-  has_tpu = False
   try:
     import torch_tpu  # noqa: F401
-    has_tpu = hasattr(torch, "tpu") and torch.tpu.is_available()
   except ImportError:
     pass
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
 
   device = torch.device("tpu:0" if has_tpu else "cpu")
   backend_name = "tpu" if has_tpu else "inductor"
 
   def sync():
     if has_tpu:
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
 
   print("=" * 78)
   print(f"PYTORCH EXECUTION BENCHMARK (device={device}, compile_backend='{backend_name}')")
@@ -58,6 +61,18 @@ def benchmark_pytorch():
     sync()
   eager_ms = ((time.perf_counter() - t0) / ITERS) * 1e3
 
+  # 1b. Optional TorchTPU Defer-and-Fuse Eager context manager (with torch.tpu.set_eager_mode)
+  defer_ms = None
+  if has_tpu and hasattr(torch, "tpu") and hasattr(torch.tpu, "set_eager_mode"):
+    with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_AND_FUSE):
+      _ = neural_block(x, w1, w2)
+      sync()
+      t_df = time.perf_counter()
+      for _ in range(ITERS):
+        _ = neural_block(x, w1, w2)
+        sync()
+      defer_ms = ((time.perf_counter() - t_df) / ITERS) * 1e3
+
   # 2. Cold Start (Step 1) + Warm Cache Hits (Steps 2+) for torch.compile
   compiled_block = torch.compile(neural_block, backend=backend_name, dynamic=False)
   t_cold_start = time.perf_counter()
@@ -72,10 +87,12 @@ def benchmark_pytorch():
   compiled_ms = ((time.perf_counter() - t0) / ITERS) * 1e3
 
   max_diff = float((out_eager - out_compiled).abs().max().cpu().item())
-  print(f"  [Eager Mode]          Avg Latency : {eager_ms:8.3f} ms / step")
-  print(f"  [torch.compile Cold]  Step 1 Time : {cold_compile_ms:8.3f} ms (Graph capture + compilation)")
-  print(f"  [torch.compile Warm]  Avg Latency : {compiled_ms:8.3f} ms / step")
-  print(f"  [Speedup & Parity]    Warm Speedup: {eager_ms / max(compiled_ms, 1e-6):.2f}x | Max Diff: {max_diff:.2e}\n")
+  print(f"  [Eager Mode (DEFER_NEVER)] Avg Latency : {eager_ms:8.3f} ms / step")
+  if defer_ms is not None:
+    print(f"  [Eager (DEFER_AND_FUSE)]   Avg Latency : {defer_ms:8.3f} ms / step")
+  print(f"  [torch.compile Cold]       Step 1 Time : {cold_compile_ms:8.3f} ms (Graph capture + compilation)")
+  print(f"  [torch.compile Warm]       Avg Latency : {compiled_ms:8.3f} ms / step")
+  print(f"  [Speedup & Parity]         Warm Speedup: {eager_ms / max(compiled_ms, 1e-6):.2f}x | Max Diff: {max_diff:.2e}\n")
 
 
 def benchmark_jax():

@@ -32,9 +32,14 @@ def run_pytorch_block(data):
 
   try:
     import torch_tpu  # noqa: F401
-    device = torch.device("tpu:0" if hasattr(torch, "tpu") and torch.tpu.is_available() else "cpu")
   except ImportError:
-    device = torch.device("cpu")
+    pass
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
+  device = torch.device("tpu:0" if has_tpu else "cpu")
 
   class RMSNormSwiGLUBlock(nn.Module):
     def __init__(self):

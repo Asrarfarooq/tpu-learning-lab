@@ -42,39 +42,43 @@ When compiled with `torch.compile(f, backend="tpu")` or `@jax.jit`, XLA's fusion
 
 ## 3. The 4 Execution Modes on TPU Compared
 
+In `torch_tpu 0.2.0+` (`torch_tpu/_internal/eager/__init__.py`), you can control eager execution behavior either via environment variables (`TORCH_TPU_DEFER_AND_FUSE=1`), by assigning to the module property **`torch.tpu.eager_mode`**, or inside a scoped block using the context manager **`with torch.tpu.set_eager_mode(mode):`**:
+* `torch.tpu.EagerMode.DEFER_NEVER`: Strict op-by-op eager execution (default).
+* `torch.tpu.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING`: Synchronous op-by-op eager execution for pinpointing exact Python stack traces on NaN/shape errors.
+* `torch.tpu.EagerMode.DEFER_AND_FUSE`: Queues ATen ops lazily and fuses them at synchronization boundaries.
+* *(Internal debug mode)* `torch.tpu.EagerMode.INTERNAL_COMPILE_FX_GRAPH`: Traces eager ops through an FX graph compilation path.
+
+```python
+import torch
+
+# 1. Global property assignment (getter / setter):
+torch.tpu.eager_mode = torch.tpu.EagerMode.DEFER_NEVER
+
+# 2. Scoped context manager (@contextlib.contextmanager):
+with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_AND_FUSE):
+    y = neural_block(x)
+```
+
 | Execution Mode | How to Enable | How It Works Under the Hood | When to Use |
 | :--- | :--- | :--- | :--- |
-| **1. TorchTPU Strict Eager** | Default (`TORCH_TPU_DEFER_AND_FUSE=0`) | Compiles and executes every single ATen op immediately as a 1-op XLA graph. | Debugging exact line-by-line shape/nan errors (`TORCH_TPU_LAUNCH_BLOCKING=1`, `TORCH_TPU_ENABLE_DEBUG_CHECKS=1`). Never use for benchmarking. |
-| **2. TorchTPU Defer-and-Fuse Eager** | `os.environ["TORCH_TPU_DEFER_AND_FUSE"] = "1"` | Queues ATen ops into a lazy buffer and compiles & fuses the accumulated subgraph when a sync barrier (`print`, `.item()`, `.cpu()`, `synchronize()`) occurs. | Running legacy eager scripts that cannot yet use `torch.compile` cleanly. |
-| **3. TorchTPU `torch.compile`** | `torch.compile(model, backend="tpu", dynamic=False)` | **TorchDynamo** captures the full Python frame into an FX graph; **AOTAutograd** traces forward+backward into Core ATen; TorchTPU lowers to **StableHLO**; XLA compiles a single fused TPU binary. | **Production standard** for all TorchTPU training and inference workloads. |
+| **1. TorchTPU Strict Eager** | `torch.tpu.eager_mode = torch.tpu.EagerMode.DEFER_NEVER` (Default) | Compiles and executes every single ATen op immediately as a 1-op XLA graph. | Debugging exact line-by-line shape/NaN errors (`EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING`). Never use for benchmarking. |
+| **2. TorchTPU Defer-and-Fuse Eager** | `with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_AND_FUSE):` (or `TORCH_TPU_DEFER_AND_FUSE=1`) | Queues ATen ops into a lazy buffer and compiles & fuses the accumulated subgraph when a sync barrier (`print`, `.item()`, `.cpu()`, `torch.accelerator.synchronize()`) occurs. | Running legacy eager scripts that cannot yet use `torch.compile` cleanly. |
+| **3. TorchTPU `torch.compile`** | `torch.compile(model, backend="tpu", dynamic=False)` *(or simply `torch.compile(model)` with `TORCH_DEVICE_BACKEND_AUTOLOAD=1`)* | **TorchDynamo** captures the full Python frame into an FX graph; **AOTAutograd** traces forward+backward into Core ATen; TorchTPU lowers to **StableHLO**; XLA compiles a single fused TPU binary. | **Production standard** for all TorchTPU training and inference workloads. |
 | **4. JAX `@jax.jit`** | `@jax.jit` on `def step(params, x): ...` | Traces the pure Python function with abstract `ShapedArray` tracers into a `jaxpr`, lowers to **StableHLO**, and compiles a single XLA TPU executable. | **Production standard** for all JAX training and inference workloads. |
 
 ## 4. Inside the `torch.compile(backend="tpu")` Pipeline
 
-```
-+-------------------------------------------------------------------+
-| 0. Python Model Code   : def forward(x, w): return F.gelu(x @ w)  |
-+---------------------------------+---------------------------------+
-                                  | 1. TorchDynamo (Bytecode Capture)
-                                  v
-+-------------------------------------------------------------------+
-| 1. FX Graph            : Captures Python frame into FX graph      |
-+---------------------------------+---------------------------------+
-                                  | 2. AOTAutograd (Fwd + Bwd Trace)
-                                  v
-+-------------------------------------------------------------------+
-| 2. Core ATen Graph     : Decomposes 2000+ ops -> ~250 Core ATen   |
-+---------------------------------+---------------------------------+
-                                  | 3. TorchTPU C++ Lowering
-                                  v
-+-------------------------------------------------------------------+
-| 3. StableHLO Module    : Portable MLIR shared by TorchTPU & JAX   |
-+---------------------------------+---------------------------------+
-                                  | 4. libtpu.so XLA Compiler
-                                  v
-+-------------------------------------------------------------------+
-| 4. TPU Executable      : HLO Fusion -> LLO VLIW (3-Tier Cached)   |
-+-------------------------------------------------------------------+
+```mermaid
+flowchart TD
+    S0["0. Python Model Code: def forward(x, w): return F.gelu(x @ w)"]
+    S1["1. FX Graph: TorchDynamo captures Python bytecode frame"]
+    S2["2. Core ATen Graph: AOTAutograd traces fwd + bwd (~250 Core ATen ops)"]
+    S3["3. StableHLO MLIR Module: TorchTPU C++ lowers ATen → portable StableHLO"]
+    S4["4. TPU Executable (HLO Fusion → LLO VLIW): libtpu.so compiles & caches across 3 tiers"]
+    S0 -- "1. TorchDynamo" --> S1
+    S1 -- "2. AOTAutograd" --> S2
+    S2 -- "3. TorchTPU Lowering" --> S3
+    S3 -- "4. libtpu.so XLA Compiler" --> S4
 ```
 
 ## 5. Guided Hands-On Lab (`labs/lab_02_execution_modes_benchmark.py`)

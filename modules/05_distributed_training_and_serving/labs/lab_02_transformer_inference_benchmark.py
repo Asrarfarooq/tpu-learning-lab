@@ -28,12 +28,15 @@ def benchmark_pytorch_transformer():
     print("[PyTorch] Not installed; skipping.")
     return
 
-  has_tpu = False
   try:
     import torch_tpu  # noqa: F401
-    has_tpu = hasattr(torch, "tpu") and torch.tpu.is_available()
   except ImportError:
     pass
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
 
   device = torch.device("tpu:0" if has_tpu else "cpu")
   backend_name = "tpu" if has_tpu else "inductor"
@@ -70,13 +73,13 @@ def benchmark_pytorch_transformer():
   # Warmup
   _ = compiled_model(x)
   if has_tpu:
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
   t0 = time.perf_counter()
   for _ in range(ITERS):
     _ = compiled_model(x)
     if has_tpu:
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
   dt = (time.perf_counter() - t0) / ITERS
 
   flops = estimate_decoder_layer_flops(BATCH, SEQ_LEN, D_MODEL, D_FF)

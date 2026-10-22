@@ -59,9 +59,14 @@ def task_2_precision_vs_accuracy_and_speed():
     import torch
     try:
       import torch_tpu  # noqa: F401
-      device = torch.device("tpu:0" if hasattr(torch, "tpu") and torch.tpu.is_available() else "cpu")
     except ImportError:
-      device = torch.device("cpu")
+      pass
+    has_tpu = (
+        hasattr(torch, "accelerator")
+        and torch.accelerator.is_available()
+        and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+    )
+    device = torch.device("tpu:0" if has_tpu else "cpu")
 
     print(f"[PyTorch on {device}] Comparing (512x512) Matmul against float64 reference:")
     t_a_bf16 = torch.from_numpy(a_f32).to(device=device, dtype=torch.bfloat16)
@@ -70,6 +75,13 @@ def task_2_precision_vs_accuracy_and_speed():
     err_bf16 = float(np.max(np.abs(out_bf16 - ref_f64)))
     print(f"  dtype=bfloat16 (1-pass native)  | Max Abs Error vs fp64: {err_bf16:.6e}")
 
+    try:
+      out_acc_f32 = torch.mm(t_a_bf16, t_b_bf16, out_dtype=torch.float32).cpu().numpy()
+      err_acc_f32 = float(np.max(np.abs(out_acc_f32 - ref_f64)))
+      print(f"  torch.mm(bf16, out_dtype=fp32)  | Max Abs Error vs fp64: {err_acc_f32:.6e} (Direct FP32 MXU accumulator!)")
+    except TypeError:
+      pass
+
     t_a_f32 = torch.from_numpy(a_f32).to(device=device)
     t_b_f32 = torch.from_numpy(b_f32).to(device=device)
     for mode in ("medium", "high", "highest"):
@@ -77,6 +89,15 @@ def task_2_precision_vs_accuracy_and_speed():
       out_f32 = (t_a_f32 @ t_b_f32).cpu().numpy()
       err_f32 = float(np.max(np.abs(out_f32 - ref_f64)))
       print(f"  dtype=float32  (mode={mode:<7}) | Max Abs Error vs fp64: {err_f32:.6e}")
+
+    if has_tpu and hasattr(torch, "tpu") and hasattr(torch.tpu, "precision"):
+      for prec_name in ("DEFAULT", "BF16_3X", "HIGHEST"):
+        prec_enum = getattr(torch.tpu.Precision, prec_name, None)
+        if prec_enum is not None:
+          with torch.tpu.precision(prec_enum):
+            out_scoped = (t_a_f32 @ t_b_f32).cpu().numpy()
+          err_scoped = float(np.max(np.abs(out_scoped - ref_f64)))
+          print(f"  torch.tpu.precision({prec_name:<7})  | Max Abs Error vs fp64: {err_scoped:.6e}")
   except ImportError:
     pass
 

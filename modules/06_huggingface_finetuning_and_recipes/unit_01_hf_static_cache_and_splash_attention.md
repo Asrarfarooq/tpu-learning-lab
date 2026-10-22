@@ -13,8 +13,7 @@ By the end of this unit, you will be able to:
 When instantiating a multi-billion parameter Hugging Face model on a Cloud TPU VM, allocating weights on the Host CPU first and calling `.to("tpu")` afterwards doubles host DRAM pressure and triggers slow PCIe copies. Instead, allocate directly inside a `with torch.device("tpu"):` context or pass `torch_dtype=torch.bfloat16`:
 
 ```python
-import torch
-import torch_tpu  # Registers the 'tpu' PrivateUse1 accelerator backend
+import torch  # Autoloads torch_tpu via TORCH_DEVICE_BACKEND_AUTOLOAD=1
 import transformers
 
 device = torch.device("tpu")
@@ -35,21 +34,20 @@ with torch.device("tpu"):
 
 When you pass a standard 2D `attention_mask` (shape `[batch_size, seq_len]`) from `AutoTokenizer` into `model(**inputs)`, `transformers.masking_utils` executes Python control-flow heuristics (such as `_ignore_causal_mask_sdpa` and `find_packed_sequence_indices`) that call `.all()` or `.item()` on the mask tensor. On a TPU, inspecting tensor values from Python forces a synchronous device-to-host transfer and causes a **TorchDynamo graph break**.
 
-```
-Standard 2D attention_mask Path (Causes Graph Break & Host Sync!):
-  AutoTokenizer -> 2D attention_mask [B, S]
-    -> transformers.masking_utils calls mask.all() / .item()
-    -> Host CPU blocks waiting for TPU -> Graph Break!
-
-TorchTPU Production Fix A (Full-Length Unpadded Batches):
-  inputs.pop("attention_mask", None)
-    -> Model uses pure internal causal mask (is_causal=True)
-    -> 0 Host Syncs, 0 Graph Breaks!
-
-TorchTPU Production Fix B (Padded / Sliding-Window Batches):
-  Precompute 4D Causal Mask [B, 1, S, S] outside compiled region
-    -> transformers.masking_utils takes early return on 4D mask
-    -> 0 Host Syncs, 0 Graph Breaks!
+```mermaid
+flowchart TD
+    subgraph BAD["Anti-Pattern: Standard 2D attention_mask [B, S]"]
+        B1["AutoTokenizer emits 2D attention_mask [B, S]"] --> B2["transformers.masking_utils calls mask.all() / .item()"]
+        B2 --> B3["Host CPU blocks on TPU D2H transfer → TorchDynamo Graph Break!"]
+    end
+    subgraph FIXA["Production Fix A: Full-Length Unpadded Batches"]
+        A1["inputs.pop('attention_mask', None)"] --> A2["Model uses native causal mask (is_causal=True)"]
+        A2 --> A3["0 Host Syncs • Single Fused XLA Graph"]
+    end
+    subgraph FIXB["Production Fix B: Padded or Sliding-Window Batches"]
+        C1["Precompute 4D Causal Mask [B, 1, S, S] before compiled call"] --> C2["masking_utils takes early return on 4D tensor"]
+        C2 --> C3["0 Host Syncs • Single Fused XLA Graph"]
+    end
 ```
 
 ### Verified Pattern (`torch_tpu/perflab/model_helpers.py` & `model_utils.py`)
@@ -114,9 +112,32 @@ attn_out = splash_sdpa(
 
 In internal Gemma-4 benchmarks (`google/examples/gemma4/gemma4_tutorial.md`, `batch=4, seq_len=1024`), switching from eager masked SDPA to `splash_sdpa` reduced forward latency from **`33.89 ms` to `25.21 ms` (1.34x faster)** and cut forward peak HBM from **`12.84 GB` to `5.20 GB` (2.47x memory reduction)**.
 
-## 6. Guided Hands-On Lab (`labs/lab_01_hf_static_cache_decode_benchmark.py`)
+## 6. PyTorch-to-TPU Onboarding, CUDA Unwiring & Teacher-Forced Parity (`torchtpu_agents`)
+
+When migrating an existing GPU/CUDA codebase (or custom Hugging Face model) to TorchTPU (`torchtpu_agents/package/agents/tpu-model-onboarding.md`, `references/tpu-unwiring.md`, and `references/numerical-parity.md`), follow this 4-stage onboarding protocol:
+
+| Stage | Goal | Concrete Engineering Pattern |
+| :--- | :--- | :--- |
+| **1. Pre-Flight CUDA Scan & Unwiring** | Replace hard-coded CUDA/Triton ops (`flash_attn`, `xformers`, `triton.jit`, `bitsandbytes`, `.cuda()`, `torch.cuda.amp`) without polluting upstream model files. | Isolate all runtime monkey-patches in a standalone **`model_patches.py`** imported at entrypoint startup. Map `flash_attn_func` $\rightarrow$ `F.scaled_dot_product_attention` (or `splash_sdpa`), and `torch.cuda.*` $\rightarrow$ `torch.accelerator.*`. |
+| **2. Teacher-Forced Per-Layer Numerical Parity** | Verify that TPU `bfloat16` layers match CPU `float32` reference within the hardware's expected precision floor before running multi-hour training. | Attach `module.register_forward_hook` to every submodule. **Critical**: Feed the **exact same CPU reference input tensor** into each individual TPU submodule (**Teacher-Forced Hook**) so `bfloat16` rounding errors don't compound across 32+ layers! |
+| **3. Relative Error Grading (`max_rel` vs. `bfloat16` Floor)** | Distinguish real lowering bugs from normal `bfloat16` 7-bit mantissa rounding ($2^{-7} \approx 0.78\%$). | Grade parity using `max_rel = (tpu.float() - ref).abs().max() / (ref.abs().max() + 1e-6)`:<br>• **`max_rel < 3%` (`0.03`)**: PASS (normal `bfloat16` MXU noise floor).<br>• **`3% - 10%`**: WARN (check softmax/layernorm upcasting or `out_dtype=torch.float32`).<br>• **`> 10%` or `NaN`**: FAIL (broken mask sign, stride view bug, or uninitialized buffer). |
+| **4. Production Serving with `vllm_torchtpu`** | Serve high-throughput continuous batching & PagedAttention on TPU. | Use **`vllm_torchtpu`** (`vllm` backed by `torch_tpu`), and profile prefill vs. decode phases separately using `TORCH_TPU_PROFILED_PHASES="prefill,decode"`. |
+
+```python
+# Teacher-Forced Per-Layer Numerical Parity Check (references/numerical-parity.md)
+def check_layer_parity(layer_cpu_fp32, layer_tpu_bf16, x_ref_fp32):
+    with torch.no_grad():
+        y_ref = layer_cpu_fp32(x_ref_fp32)
+        y_tpu = layer_tpu_bf16(x_ref_fp32.to(device="tpu", dtype=torch.bfloat16)).float().cpu()
+    max_abs = (y_tpu - y_ref).abs().max().item()
+    max_rel = max_abs / (y_ref.abs().max().item() + 1e-6)
+    status = "PASS" if max_rel < 0.03 else ("WARN" if max_rel < 0.10 else "FAIL")
+    print(f"[{status}] max_abs={max_abs:.3e} | max_rel={max_rel*100:.2f}% (bf16 noise floor ~3%)")
+```
+
+## 7. Guided Hands-On Lab (`labs/lab_01_hf_static_cache_decode_benchmark.py`)
 
 In the right-hand lab editor, examine `labs/lab_01_hf_static_cache_decode_benchmark.py`:
-1. It builds a Grouped-Query Attention (GQA) Transformer decoder matching the architecture of **Qwen3 / Llama-3.2 / Gemma** (using `transformers` when installed, or a self-contained GQA + RoPE + SwiGLU decoder with identical tensor semantics).
-2. It compares **Dynamic KV Cache allocation** (which changes tensor shapes on every token `[B, H, S+t, D]`) against a **Pre-Allocated `StaticCache` buffer** (`[B, H, max_cache_len, D]`) updated via static `cache_position` indexing.
-3. It verifies `keepdim=True` token selection, in-place cache rewinding, and computes **Prefill Time-To-First-Token (TTFT)**, **Decode Inter-Token Latency (ITL)**, and **HBM Bandwidth Utilization (%)** on `v6e-1` vs. `v5p`.
+1. It builds a Grouped-Query Attention (GQA) Transformer decoder matching the architecture of **Qwen3 / Llama-3.2 / Gemma** in **both PyTorch (`torch_tpu`) and JAX**.
+2. It compares **Dynamic KV Cache allocation** against a **Pre-Allocated `StaticCache` buffer** (`[B, H, max_cache_len, D]`) updated via static `cache_position` indexing.
+3. It verifies `keepdim=True` token selection, in-place cache rewinding, and computes **Prefill Time-To-First-Token (TTFT)** and **Decode Inter-Token Latency (ITL)** with zero recompilations.

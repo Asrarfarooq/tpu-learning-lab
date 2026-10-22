@@ -4,7 +4,12 @@
 import argparse
 import json
 import time
-import torch
+
+try:
+  import torch
+  HAS_TORCH = True
+except ImportError:
+  HAS_TORCH = False
 
 
 def main():
@@ -15,11 +20,20 @@ def main():
   parser.add_argument("--decode-steps", type=int, default=16)
   args = parser.parse_args()
 
+  if not HAS_TORCH:
+    print("PyTorch not installed in local CPU preview env; switch Execution Target to 'Cloud TPU VM' to run full Hugging Face Qwen3/Llama-3.2 StaticCache benchmark.")
+    return
+
   try:
     import torch_tpu  # noqa: F401
-    device = torch.device("tpu" if hasattr(torch, "tpu") and torch.tpu.is_available() else "cpu")
   except ImportError:
-    device = torch.device("cpu")
+    pass
+  has_tpu = (
+      hasattr(torch, "accelerator")
+      and torch.accelerator.is_available()
+      and getattr(torch.accelerator.current_accelerator(), "type", None) == "tpu"
+  )
+  device = torch.device("tpu" if has_tpu else "cpu")
 
   import transformers
   from transformers import cache_utils

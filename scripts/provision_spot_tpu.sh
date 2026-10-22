@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "${ACCELERATOR_TYPE}" == v6e* ]]; then
   RUNTIME_VERSION="v2-alpha-tpuv6e"
-  FALLBACK_ZONES=("${ZONE}" "us-east1-d" "us-east5-a" "us-east5-b" "us-central1-b" "us-central2-b" "europe-west4-a")
+  FALLBACK_ZONES=("${ZONE}" "us-east1-d" "us-east5-a" "us-east5-b" "us-central1-b" "europe-west4-a")
 elif [[ "${ACCELERATOR_TYPE}" == v5p* ]]; then
   RUNTIME_VERSION="v2-alpha-tpuv5"
   FALLBACK_ZONES=("${ZONE}" "us-east1-d" "us-east5-a" "us-east5-b" "europe-west4-b")

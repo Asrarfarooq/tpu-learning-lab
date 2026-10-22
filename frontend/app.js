@@ -353,6 +353,35 @@ async function selectUnit(moduleId, unitId) {
   const modDesc = document.getElementById('unit-module-desc');
   if (modDesc) modDesc.textContent = mod && mod.description ? mod.description : '';
 
+  const eyebrow = document.getElementById('unit-eyebrow');
+  if (eyebrow && mod && unitMeta) {
+    const cleanMod = mod.title.replace(/^Module\s+\d+:\s*/i, '');
+    eyebrow.innerHTML = `<span class="chapter-eyebrow-dot"></span><span>Module ${modIndex} · ${escapeHtml(cleanMod)} · Unit ${unitIndex + 1} of ${(mod.units || []).length}</span>`;
+  }
+
+  const stagesBar = document.getElementById('unit-stages-bar');
+  if (stagesBar && mod && Array.isArray(mod.units)) {
+    stagesBar.innerHTML = mod.units.map((u, idx) => {
+      const done = isUnitCompleted(mod.id, u.id);
+      const active = u.id === unitId;
+      const cls = active ? 'stage-active' : (done ? 'stage-done' : '');
+      const statusIcon = done ? '✓' : (active ? '●' : '');
+      const shortTitle = u.title.replace(/^Unit\s+[\d.]+:\s*/i, '');
+      return `
+        <li class="${cls}" data-stage-unit="${escapeHtml(u.id)}" title="${escapeHtml(u.title)}">
+          <div class="unit-stage-num">
+            <span>STAGE 0${idx + 1}</span>
+            <span>${statusIcon}</span>
+          </div>
+          <div class="unit-stage-title">${escapeHtml(shortTitle)}</div>
+        </li>
+      `;
+    }).join('');
+    stagesBar.querySelectorAll('[data-stage-unit]').forEach((li) => {
+      li.addEventListener('click', () => selectUnit(mod.id, li.dataset.stageUnit));
+    });
+  }
+
   updateCompleteButtonsUI();
   wireUnitNavigation();
 
@@ -1218,6 +1247,289 @@ function classifyCallout(rawText) {
   return { cls: 'callout-info' };
 }
 
+function renderSchematicsLibrary(diagramId) {
+  const schematics = {
+    'tensor-memory-layout': `
+      <div class="schematic-card">
+        <div class="schematic-header">
+          <span class="schematic-badge">SCHEMATIC 0.1A • LOGICAL HEADER VS. CONTIGUOUS HBM BUFFER</span>
+          <span class="schematic-meta">Zero-Copy View Mechanics</span>
+        </div>
+        <div class="schematic-body">
+          <div class="schematic-split-box">
+            <div class="schematic-node schematic-node-ink">
+              <div class="schematic-node-title">PyTorch / JAX Tensor Header (Host / Runtime Metadata)</div>
+              <div class="schematic-kv-grid">
+                <div><span class="kv-key">data_ptr</span><span class="kv-val">0x7f8a40000000 (Physical HBM base address)</span></div>
+                <div><span class="kv-key">dtype</span><span class="kv-val">bfloat16 (2 bytes / element)</span></div>
+                <div><span class="kv-key">shape</span><span class="kv-val">(2, 4) → 2 rows × 4 cols = 8 elements</span></div>
+                <div><span class="kv-key">strides</span><span class="kv-val">(4, 1) → +4 elements next row, +1 next col</span></div>
+                <div><span class="kv-key">device</span><span class="kv-val">tpu:0 (TPU Chip 0 On-Package HBM)</span></div>
+              </div>
+            </div>
+            <div class="schematic-connector-down">
+              <span>Points to physical 1D HBM allocation (offset = i·stride[0] + j·stride[1])</span>
+              <svg width="16" height="22" viewBox="0 0 16 22"><path d="M8 0v18M2 13l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            </div>
+            <div class="schematic-node schematic-node-blue">
+              <div class="schematic-node-title">Physical Contiguous 1D Memory Array in TPU HBM (16 Bytes Total)</div>
+              <div class="schematic-byte-tape">
+                <div class="tape-cell"><span class="tape-coord">X[0,0]</span><span class="tape-off">Off 0 (B0..1)</span></div>
+                <div class="tape-cell"><span class="tape-coord">X[0,1]</span><span class="tape-off">Off 1 (B2..3)</span></div>
+                <div class="tape-cell"><span class="tape-coord">X[0,2]</span><span class="tape-off">Off 2 (B4..5)</span></div>
+                <div class="tape-cell"><span class="tape-coord">X[0,3]</span><span class="tape-off">Off 3 (B6..7)</span></div>
+                <div class="tape-cell tape-row2"><span class="tape-coord">X[1,0]</span><span class="tape-off">Off 4 (B8..9)</span></div>
+                <div class="tape-cell tape-row2"><span class="tape-coord">X[1,1]</span><span class="tape-off">Off 5 (B10..11)</span></div>
+                <div class="tape-cell tape-row2"><span class="tape-coord">X[1,2]</span><span class="tape-off">Off 6 (B12..13)</span></div>
+                <div class="tape-cell tape-row2"><span class="tape-coord">X[1,3]</span><span class="tape-off">Off 7 (B14..15)</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    'tpu-hardware-hierarchy': `
+      <div class="schematic-card">
+        <div class="schematic-header">
+          <span class="schematic-badge">SCHEMATIC 0.1B • HOST CPU DRAM ↔ PCIe ↔ CLOUD TPU CHIP HIERARCHY</span>
+          <span class="schematic-meta">v6e (Trillium) &amp; v5p Architecture</span>
+        </div>
+        <div class="schematic-body">
+          <div class="schematic-node schematic-node-muted">
+            <div class="schematic-node-title">HOST x86 SERVER • System DRAM (100 – 400 GB)</div>
+            <div class="schematic-node-sub">Runs Python interpreter, DataLoader workers, tokenization &amp; asynchronous PJRT graph dispatch</div>
+          </div>
+          <div class="schematic-connector-bi">
+            <div class="bi-pill"><code>.to("tpu")</code> / <code>jax.device_put()</code> ↓</div>
+            <div class="bi-bus">PCIe Gen4/Gen5 Bus (~16 – 64 GB/s — Bottleneck if synced per step!)</div>
+            <div class="bi-pill">↑ <code>.cpu()</code> / <code>.item()</code> / <code>jax.device_get()</code></div>
+          </div>
+          <div class="schematic-chip-enclosure">
+            <div class="chip-enclosure-label">GOOGLE CLOUD TPU CHIP PACKAGE (tpu:0)</div>
+            <div class="schematic-node schematic-node-blue">
+              <div class="schematic-node-title">1. On-Package HBM (High Bandwidth Memory)</div>
+              <div class="schematic-stat-pills">
+                <span><b>v6e:</b> 32 GiB @ 1,600 GB/s</span>
+                <span><b>v5p:</b> 95 GiB @ 2,765 GB/s</span>
+                <span><b>Role:</b> Stores all TPU tensors (Weights, Grads, Optimizer State, KV Cache)</span>
+              </div>
+            </div>
+            <div class="schematic-connector-down">
+              <span>Async Hardware DMA Engine (Streams (8, 128)-aligned tiles into SRAM)</span>
+              <svg width="16" height="20" viewBox="0 0 16 20"><path d="M8 0v16M2 11l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            </div>
+            <div class="schematic-node schematic-node-emerald">
+              <div class="schematic-node-title">2. On-Die VMEM (Vector SRAM Scratchpad • 16 – 64 MiB)</div>
+              <div class="schematic-node-sub">Multi-TB/s on-die SRAM directly feeding the TensorCore compute units (Explicitly programmable via Pallas <code>BlockSpec</code>)</div>
+            </div>
+            <div class="schematic-connector-down">
+              <span>Register File Load / Store (VREGs: 8 sublanes × 128 lanes × 32-bit)</span>
+              <svg width="16" height="20" viewBox="0 0 16 20"><path d="M8 0v16M2 11l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            </div>
+            <div class="schematic-grid-3">
+              <div class="schematic-subbox">
+                <div class="subbox-tag">MXU (Systolic Array)</div>
+                <div class="subbox-title">256×256 (v6e) / 128×128 (v5p)</div>
+                <div class="subbox-desc">bf16 / fp8 / int8 matrix multiply-accumulate into fp32 accumulators (918 TFLOPs/s on v6e)</div>
+              </div>
+              <div class="schematic-subbox">
+                <div class="subbox-tag">VPU (Vector Unit)</div>
+                <div class="subbox-title">2D Vector ALU (8 × 128)</div>
+                <div class="subbox-desc">Elementwise activations (SiLU, GELU, exp), softmax reductions, LayerNorm / RMSNorm</div>
+              </div>
+              <div class="schematic-subbox">
+                <div class="subbox-tag">XLU (Cross-Lane Unit)</div>
+                <div class="subbox-title">Hardware Permute &amp; Transpose</div>
+                <div class="subbox-desc">On-chip matrix transposes, sublane shuffles, and bit-packing in VREGs</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    'mxu-systolic-array': `
+      <div class="schematic-card">
+        <div class="schematic-header">
+          <span class="schematic-badge">SCHEMATIC 1.1A • WEIGHT-STATIONARY 2D SYSTOLIC ARRAY (MXU)</span>
+          <span class="schematic-meta">Zero Register File Read/Write Between MACs</span>
+        </div>
+        <div class="schematic-body">
+          <div class="systolic-diagram-grid">
+            <div class="systolic-legend-top">Weights <code>W[k, n]</code> pre-loaded stationary inside MAC cells • Partial sums accumulate vertically in <code>fp32</code> ↓</div>
+            <div class="systolic-matrix">
+              <div class="sys-row">
+                <div class="sys-act-in">Activation Row 0 <code>X[m, 0]</code> →</div>
+                <div class="sys-cell"><span class="sys-w">W[0, 0]</span><span class="sys-acc">acc₀ += X·W</span></div>
+                <div class="sys-cell"><span class="sys-w">W[0, 1]</span><span class="sys-acc">acc₁ += X·W</span></div>
+                <div class="sys-cell"><span class="sys-w">W[0, 2]</span><span class="sys-acc">acc₂ += X·W</span></div>
+                <div class="sys-dots">··· Col 127 / 255</div>
+              </div>
+              <div class="sys-row">
+                <div class="sys-act-in">Activation Row 1 <code>X[m, 1]</code> →</div>
+                <div class="sys-cell"><span class="sys-w">W[1, 0]</span><span class="sys-acc">acc₀ += X·W</span></div>
+                <div class="sys-cell"><span class="sys-w">W[1, 1]</span><span class="sys-acc">acc₁ += X·W</span></div>
+                <div class="sys-cell"><span class="sys-w">W[1, 2]</span><span class="sys-acc">acc₂ += X·W</span></div>
+                <div class="sys-dots">··· Col 127 / 255</div>
+              </div>
+              <div class="sys-row sys-out-row">
+                <div class="sys-act-in">FP32 Accumulator Out →</div>
+                <div class="sys-out-pill">Out Y[:, 0] (fp32 → bf16)</div>
+                <div class="sys-out-pill">Out Y[:, 1] (fp32 → bf16)</div>
+                <div class="sys-out-pill">Out Y[:, 2] (fp32 → bf16)</div>
+                <div class="sys-dots">To VPU / VMEM</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    'floating-point-bit-layouts': `
+      <div class="schematic-card">
+        <div class="schematic-header">
+          <span class="schematic-badge">SCHEMATIC 1.1B • FLOATING-POINT BIT LAYOUT COMPARISON</span>
+          <span class="schematic-meta">Why BF16 &amp; FP8 E5M2 Eliminate GradScaler</span>
+        </div>
+        <div class="schematic-body">
+          <div class="bit-layout-table">
+            <div class="bit-spec-row">
+              <div class="bit-spec-name"><code>float32</code> (4 Bytes)</div>
+              <div class="bit-spec-bars">
+                <span class="bbar-s" style="flex:1">S (1b)</span>
+                <span class="bbar-e" style="flex:8">Exponent (8 bits • Range ~1e-38..3.4e38)</span>
+                <span class="bbar-m" style="flex:23">Mantissa (23 bits • ~7.2 decimal digits)</span>
+              </div>
+            </div>
+            <div class="bit-spec-row">
+              <div class="bit-spec-name"><code>bfloat16</code> (2 Bytes)</div>
+              <div class="bit-spec-bars">
+                <span class="bbar-s" style="flex:1">S (1b)</span>
+                <span class="bbar-e" style="flex:8">Exponent (8 bits • Exact FP32 dynamic range!)</span>
+                <span class="bbar-m" style="flex:7">Mantissa (7 bits • ~2.4 digits)</span>
+              </div>
+            </div>
+            <div class="bit-spec-row">
+              <div class="bit-spec-name"><code>float16</code> (2 Bytes)</div>
+              <div class="bit-spec-bars">
+                <span class="bbar-s" style="flex:1">S (1b)</span>
+                <span class="bbar-e-warn" style="flex:5">Exp (5b • Max 65,504!)</span>
+                <span class="bbar-m" style="flex:10">Mantissa (10 bits • ~3.3 digits)</span>
+              </div>
+            </div>
+            <div class="bit-spec-row">
+              <div class="bit-spec-name"><code>fp8_e4m3fn</code> (1 Byte)</div>
+              <div class="bit-spec-bars">
+                <span class="bbar-s" style="flex:1">S</span>
+                <span class="bbar-e" style="flex:4">Exp (4b • Max ±448)</span>
+                <span class="bbar-m" style="flex:3">Mant (3b • Weights/Acts)</span>
+              </div>
+            </div>
+            <div class="bit-spec-row">
+              <div class="bit-spec-name"><code>fp8_e5m2</code> (1 Byte)</div>
+              <div class="bit-spec-bars">
+                <span class="bbar-s" style="flex:1">S</span>
+                <span class="bbar-e" style="flex:5">Exp (5b • Max ±57,344)</span>
+                <span class="bbar-m" style="flex:2">Mant (2b • Gradients)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    'host-device-timeline': `
+      <div class="schematic-card">
+        <div class="schematic-header">
+          <span class="schematic-badge">SCHEMATIC 2.2 • HOST-DEVICE DISPATCH TIMELINE IN XPROF</span>
+          <span class="schematic-meta">Synchronous Stall Bubble vs. Async Pipelining</span>
+        </div>
+        <div class="schematic-body">
+          <div class="timeline-compare">
+            <div class="timeline-group timeline-bad">
+              <div class="timeline-title">ANTI-PATTERN: Per-Step <code>loss.item()</code> or 2D Mask Check (Host-Sync Bubble)</div>
+              <div class="timeline-track">
+                <span class="track-label">Host CPU</span>
+                <div class="track-bars">
+                  <span class="tbar tbar-host" style="width:16%">Enq Step 1</span>
+                  <span class="tbar tbar-wait" style="width:32%">BLOCKED on PJRT D2H Transfer...</span>
+                  <span class="tbar tbar-host" style="width:10%">Print</span>
+                  <span class="tbar tbar-host" style="width:16%">Enq Step 2</span>
+                  <span class="tbar tbar-wait" style="width:26%">BLOCKED...</span>
+                </div>
+              </div>
+              <div class="timeline-track">
+                <span class="track-label">TPU Chip</span>
+                <div class="track-bars">
+                  <span class="tbar tbar-gap" style="width:16%"></span>
+                  <span class="tbar tbar-tpu" style="width:32%">Execute Step 1 (MXU Busy)</span>
+                  <span class="tbar tbar-bubble" style="width:26%">TPU IDLE STALL BUBBLE!</span>
+                  <span class="tbar tbar-tpu" style="width:26%">Execute Step 2</span>
+                </div>
+              </div>
+            </div>
+            <div class="timeline-group timeline-good">
+              <div class="timeline-title">PRODUCTION PATTERN: Detached Device Buffer / <code>jax.lax.scan</code> (0% TPU Idle Gap)</div>
+              <div class="timeline-track">
+                <span class="track-label">Host CPU</span>
+                <div class="track-bars">
+                  <span class="tbar tbar-host" style="width:15%">Enq 1</span>
+                  <span class="tbar tbar-host" style="width:15%">Enq 2</span>
+                  <span class="tbar tbar-host" style="width:15%">Enq 3</span>
+                  <span class="tbar tbar-host" style="width:15%">Enq 4</span>
+                  <span class="tbar tbar-ok-note" style="width:40%">Host runs 3+ steps ahead of TPU queue</span>
+                </div>
+              </div>
+              <div class="timeline-track">
+                <span class="track-label">TPU Chip</span>
+                <div class="track-bars">
+                  <span class="tbar tbar-gap" style="width:12%"></span>
+                  <span class="tbar tbar-tpu-ok" style="width:29%">Step 1 (100% Active)</span>
+                  <span class="tbar tbar-tpu-ok" style="width:29%">Step 2 (100% Active)</span>
+                  <span class="tbar tbar-tpu-ok" style="width:30%">Step 3 (100% Active)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    'ici-collectives': `
+      <div class="schematic-card">
+        <div class="schematic-header">
+          <span class="schematic-badge">SCHEMATIC 5.1 • TPU INTER-CHIP INTERCONNECT (ICI) COLLECTIVES</span>
+          <span class="schematic-meta">AllGather • ReduceScatter • AllReduce = RS + AG</span>
+        </div>
+        <div class="schematic-body">
+          <div class="collectives-grid">
+            <div class="collective-box">
+              <div class="coll-title">1. AllGather (FSDP Forward Weight Gathering)</div>
+              <div class="coll-subtitle">Every chip starts with shard 1/N and gathers the full tensor [A₀, A₁, A₂, A₃]:</div>
+              <div class="coll-chips">
+                <div class="chip-row"><span>Chip 0: <code>[A₀]</code></span><span class="coll-arrow">⇒</span><span class="chip-full"><code>[A₀, A₁, A₂, A₃]</code></span></div>
+                <div class="chip-row"><span>Chip 1: <code>[A₁]</code></span><span class="coll-arrow">⇒</span><span class="chip-full"><code>[A₀, A₁, A₂, A₃]</code></span></div>
+                <div class="chip-row"><span>Chip 2: <code>[A₂]</code></span><span class="coll-arrow">⇒</span><span class="chip-full"><code>[A₀, A₁, A₂, A₃]</code></span></div>
+                <div class="chip-row"><span>Chip 3: <code>[A₃]</code></span><span class="coll-arrow">⇒</span><span class="chip-full"><code>[A₀, A₁, A₂, A₃]</code></span></div>
+              </div>
+            </div>
+            <div class="collective-box">
+              <div class="coll-title">2. ReduceScatter (FSDP Backward Gradient Reduction)</div>
+              <div class="coll-subtitle">Sums gradients across all N chips AND shards result 1/N per chip:</div>
+              <div class="coll-chips">
+                <div class="chip-row"><span>Chip 0: <code>[G₀_a..d]</code></span><span class="coll-arrow">⇒</span><span class="chip-shard"><code>[∑ G_a]</code> (Shard 0)</span></div>
+                <div class="chip-row"><span>Chip 1: <code>[G₁_a..d]</code></span><span class="coll-arrow">⇒</span><span class="chip-shard"><code>[∑ G_b]</code> (Shard 1)</span></div>
+                <div class="chip-row"><span>Chip 2: <code>[G₂_a..d]</code></span><span class="coll-arrow">⇒</span><span class="chip-shard"><code>[∑ G_c]</code> (Shard 2)</span></div>
+                <div class="chip-row"><span>Chip 3: <code>[G₃_a..d]</code></span><span class="coll-arrow">⇒</span><span class="chip-shard"><code>[∑ G_d]</code> (Shard 3)</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="coll-formula-bar">
+            <strong>Fundamental Identity:</strong> <code>AllReduce(G) ≡ AllGather(ReduceScatter(G))</code> • Ring Bandwidth Cost: $T_{\\text{RS}} = T_{\\text{AG}} = \\frac{N-1}{N}\\frac{\\text{Bytes}}{\\beta_{\\text{ICI}}}$, $T_{\\text{AR}} = 2\\frac{N-1}{N}\\frac{\\text{Bytes}}{\\beta_{\\text{ICI}}}$
+          </div>
+        </div>
+      </div>
+    `
+  };
+  return schematics[diagramId] || `<div class="visual-diagram-card"><pre class="diagram-raw-pre"><code class="nohighlight">${escapeHtml(diagramId)}</code></pre></div>`;
+}
+
 function buildVisualFlowDiagramHtml(rawDiagram) {
   return `
     <div class="visual-diagram-card">
@@ -1259,11 +1571,12 @@ function renderMarkdown(md) {
 
   const flushTable = () => {
     if (!inTable || tableRows.length === 0) return;
-    html += '<div class="table-wrapper"><table>';
     const headerCells = tableRows[0]
       .split('|')
       .map((c) => c.trim())
       .filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+    const isComparison = headerCells.length >= 3 && headerCells.some((h) => /torch|tpu|mode|strategy|pattern|tier|stage/i.test(h));
+    html += `<div class="table-wrapper${isComparison ? ' cmp-wrap' : ''}"><table>`;
     html += '<thead><tr>' + headerCells.map((c) => `<th>${renderInline(c)}</th>`).join('') + '</tr></thead><tbody>';
 
     for (let i = 1; i < tableRows.length; i++) {
@@ -1324,30 +1637,49 @@ function renderMarkdown(md) {
         codeBuffer = [];
       } else {
         const rawCode = stripCommonIndent(codeBuffer);
-        const isDiagram =
-          (!codeLang || codeLang === 'text' || codeLang === 'ascii' || codeLang === 'diagram') &&
-          (/[┌┐└┘├┤┬┴┼─│╭╮╯╰►▼▲]|(\+---)|(\|.*->)|(-->)/.test(rawCode));
-
-        if (isDiagram) {
-          html += buildVisualFlowDiagramHtml(rawCode);
-        } else {
-          const langLabel = codeLang || 'code';
-          const isRunnablePython = langLabel === 'python' || langLabel === 'py';
-          const encodedSnippet = encodeURIComponent(rawCode);
+        if (codeLang === 'mermaid') {
           html += `
-            <div class="code-card">
-              <div class="code-card-header">
-                <div class="code-header-left">
-                  <span class="code-lang-badge">${escapeHtml(langLabel)}</span>
-                </div>
-                <div class="code-header-actions">
-                  ${isRunnablePython ? `<button class="code-action-btn" type="button" data-snippet="${encodedSnippet}">Load in Editor</button>` : ''}
-                  <button class="code-action-btn" type="button" data-copy="${encodedSnippet}">Copy</button>
-                </div>
+            <div class="mermaid-diagram-card">
+              <div class="schematic-header">
+                <span class="schematic-badge">ARCHITECTURE FLOW DIAGRAM</span>
+                <span class="schematic-meta">Interactive Vector SVG</span>
               </div>
-              <pre><code class="language-${escapeHtml(langLabel)}">${escapeHtml(rawCode)}</code></pre>
+              <div class="mermaid-body">
+                <pre class="mermaid">${escapeHtml(rawCode)}</pre>
+              </div>
             </div>
           `;
+        } else if (codeLang === 'schematic') {
+          html += renderSchematicsLibrary(rawCode.trim());
+        } else {
+          const isDiagram =
+            (!codeLang || codeLang === 'text' || codeLang === 'ascii' || codeLang === 'diagram') &&
+            (/[┌┐└┘├┤┬┴┼─│╭╮╯╰►▼▲]|(\+---)|(\|.*->)|(-->)/.test(rawCode));
+
+          if (isDiagram) {
+            html += buildVisualFlowDiagramHtml(rawCode);
+          } else {
+            const langLabel = codeLang || 'code';
+            const isRunnablePython = langLabel === 'python' || langLabel === 'py';
+            const encodedSnippet = encodeURIComponent(rawCode);
+            html += `
+              <div class="code-card">
+                <div class="code-card-header">
+                  <div class="code-header-left">
+                    <span class="code-lang-badge">${escapeHtml(langLabel)}</span>
+                  </div>
+                  <div class="code-header-actions">
+                    ${isRunnablePython ? `<button class="code-action-btn" type="button" data-snippet="${encodedSnippet}">Load in Editor</button>` : ''}
+                    <button class="code-action-btn code-copy-btn" type="button" data-copy="${encodedSnippet}" data-tip="Copied" aria-label="Copy code">
+                      <svg class="i-copy" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 5.5V3.9a1.4 1.4 0 0 0-1.4-1.4H3.9a1.4 1.4 0 0 0-1.4 1.4v5.2a1.4 1.4 0 0 0 1.4 1.4h1.6"/></svg>
+                      <svg class="i-done" viewBox="0 0 16 16"><path pathLength="1" d="M3.5 8.5 6.8 11.8 12.8 4.8"/></svg>
+                    </button>
+                  </div>
+                </div>
+                <pre><code class="language-${escapeHtml(langLabel)}">${escapeHtml(rawCode)}</code></pre>
+              </div>
+            `;
+          }
         }
         inCodeBlock = false;
         codeLang = '';
@@ -1456,13 +1788,41 @@ function renderMarkdown(md) {
     });
   }
 
+  if (window.mermaid) {
+    try {
+      window.mermaid.initialize({
+        startOnLoad: false,
+        theme: 'base',
+        themeVariables: {
+          primaryColor: '#eef4ff',
+          primaryTextColor: '#141413',
+          primaryBorderColor: '#0055d4',
+          lineColor: '#141413',
+          secondaryColor: '#eefaf3',
+          tertiaryColor: '#faf8f5',
+          fontFamily: "'JetBrains Mono', 'Inter', sans-serif",
+          fontSize: '13.5px'
+        },
+        flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: false }
+      });
+      const mermaidNodes = container.querySelectorAll('.mermaid');
+      if (mermaidNodes.length > 0) {
+        window.mermaid.run({ nodes: mermaidNodes });
+      }
+    } catch (err) {
+      console.warn('Mermaid render error:', err);
+    }
+  }
+
   container.querySelectorAll('[data-copy]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const raw = decodeURIComponent(btn.dataset.copy || '');
       navigator.clipboard.writeText(raw).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = 'Copied ✓';
-        setTimeout(() => { btn.textContent = orig; }, 1400);
+        btn.classList.add('copied');
+        clearTimeout(btn._copyTimer);
+        btn._copyTimer = setTimeout(() => {
+          btn.classList.remove('copied');
+        }, 1450);
       });
     });
   });
@@ -1483,25 +1843,47 @@ function renderMarkdown(md) {
 function buildUnitTOC() {
   const tocList = document.getElementById('unit-toc-list');
   const container = document.getElementById('unit-markdown');
+  const scrollPane = document.getElementById('content-scroll-pane');
   if (!tocList || !container) return;
 
   tocList.innerHTML = '';
-  const headings = container.querySelectorAll('h2[id], h3[id]');
-  headings.forEach((h) => {
+  const headings = Array.from(container.querySelectorAll('h2[id], h3[id]'));
+  const links = [];
+  headings.forEach((h, idx) => {
     const a = document.createElement('a');
-    a.className = 'toc-link';
+    a.className = 'toc-link' + (idx === 0 ? ' active' : '');
     if (h.tagName === 'H3') {
       a.style.paddingLeft = '10px';
       a.style.fontSize = '11.5px';
     }
     a.href = `#${h.id}`;
+    a.dataset.targetId = h.id;
     a.textContent = h.textContent;
     a.addEventListener('click', (e) => {
       e.preventDefault();
+      links.forEach((l) => l.classList.remove('active'));
+      a.classList.add('active');
       h.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
     tocList.appendChild(a);
+    links.push(a);
   });
+
+  if (scrollPane && headings.length > 0) {
+    scrollPane.onscroll = () => {
+      const paneRect = scrollPane.getBoundingClientRect();
+      let activeId = headings[0].id;
+      for (const h of headings) {
+        const rect = h.getBoundingClientRect();
+        if (rect.top - paneRect.top <= 120) {
+          activeId = h.id;
+        }
+      }
+      links.forEach((l) => {
+        l.classList.toggle('active', l.dataset.targetId === activeId);
+      });
+    };
+  }
 }
 
 function renderQuiz(quizList) {
@@ -1828,9 +2210,132 @@ function setupEventListeners() {
   });
 }
 
+function initHeroDotFieldCanvas() {
+  const canvas = document.getElementById('chapter-hero-canvas');
+  if (!canvas || !canvas.getContext) return;
+  const ctx = canvas.getContext('2d');
+  const SPACING = 22;
+  const ROW_H = SPACING * 0.866;
+  const WAVE_SPEED = 210;
+  const WAVE_SIGMA = 44;
+  let w = 0, h = 0, dpr = 1, dots = [];
+  let waves = [];
+  let ptr = { x: -9999, y: -9999, vx: 0, vy: 0, active: false, lastWave: 0 };
+
+  function resize() {
+    const rect = canvas.parentElement ? canvas.parentElement.getBoundingClientRect() : canvas.getBoundingClientRect();
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = Math.max(300, rect.width);
+    h = Math.max(120, rect.height);
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    dots = [];
+    const rows = Math.ceil(h / ROW_H) + 2;
+    const cols = Math.ceil(w / SPACING) + 2;
+    for (let r = -1; r < rows; r++) {
+      const y0 = r * ROW_H;
+      const xOff = (r & 1) ? SPACING * 0.5 : 0;
+      for (let c = -1; c < cols; c++) {
+        dots.push({ x0: c * SPACING + xOff, y0, dx: 0, dy: 0, vx: 0, vy: 0, energy: 0 });
+      }
+    }
+  }
+
+  const headerEl = canvas.parentElement;
+  if (headerEl) {
+    headerEl.addEventListener('pointermove', (e) => {
+      const r = canvas.getBoundingClientRect();
+      const nx = e.clientX - r.left;
+      const ny = e.clientY - r.top;
+      ptr.vx = nx - ptr.x;
+      ptr.vy = ny - ptr.y;
+      ptr.x = nx;
+      ptr.y = ny;
+      ptr.active = true;
+      const now = performance.now();
+      const speed = Math.hypot(ptr.vx, ptr.vy);
+      if (speed > 5 && now - ptr.lastWave > 130) {
+        waves.push({ x: nx, y: ny, t0: now, amp: Math.min(1, speed / 24) });
+        if (waves.length > 5) waves.shift();
+        ptr.lastWave = now;
+      }
+    }, { passive: true });
+    headerEl.addEventListener('pointerleave', () => { ptr.active = false; });
+  }
+
+  window.addEventListener('resize', resize, { passive: true });
+  resize();
+  waves.push({ x: w * 0.72, y: h * 0.45, t0: performance.now(), amp: 0.85 });
+
+  function step(now) {
+    ctx.clearRect(0, 0, w, h);
+    waves = waves.filter((wv) => (now - wv.t0) < 2200);
+    const invTwoSigma2 = 1 / (2 * WAVE_SIGMA * WAVE_SIGMA);
+
+    for (let i = 0; i < dots.length; i++) {
+      const d = dots[i];
+      let fx = 0, fy = 0, e = 0;
+      if (ptr.active) {
+        const rx = d.x0 - ptr.x;
+        const ry = d.y0 - ptr.y;
+        const dist2 = rx * rx + ry * ry;
+        if (dist2 < 120 * 120 && dist2 > 1) {
+          const dist = Math.sqrt(dist2);
+          const fall = Math.pow(1 - dist / 120, 2);
+          fx += (rx / dist) * fall * 1.6 + ptr.vx * 0.03 * fall;
+          fy += (ry / dist) * fall * 1.6 + ptr.vy * 0.03 * fall;
+          e = Math.max(e, fall * 0.85);
+        }
+      }
+      for (let wIdx = 0; wIdx < waves.length; wIdx++) {
+        const wv = waves[wIdx];
+        const age = (now - wv.t0) * 0.001;
+        const radius = age * WAVE_SPEED;
+        const decay = Math.exp(-age * 1.35) * wv.amp;
+        if (decay < 0.02) continue;
+        const rx = d.x0 - wv.x;
+        const ry = d.y0 - wv.y;
+        const dist = Math.hypot(rx, ry) || 1;
+        const dr = dist - radius;
+        if (Math.abs(dr) < WAVE_SIGMA * 2.4) {
+          const env = Math.exp(-dr * dr * invTwoSigma2) * decay;
+          const phase = Math.sin(dr * 0.14) * env;
+          fx += (rx / dist) * phase * 2.0;
+          fy += (ry / dist) * phase * 2.0;
+          e = Math.max(e, env);
+        }
+      }
+      d.vx = (d.vx + fx - d.dx * 0.11) * 0.82;
+      d.vy = (d.vy + fy - d.dy * 0.11) * 0.82;
+      d.dx += d.vx;
+      d.dy += d.vy;
+      d.energy = Math.max(e, d.energy * 0.91);
+
+      const x = d.x0 + d.dx;
+      const y = d.y0 + d.dy;
+      const en = Math.min(1, d.energy);
+      const r = 1.05 + en * 1.5;
+      if (en > 0.04) {
+        ctx.fillStyle = `rgba(0, 85, 255, ${(0.18 + en * 0.55).toFixed(3)})`;
+      } else {
+        ctx.fillStyle = 'rgba(20, 20, 19, 0.11)';
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ptr.vx *= 0.85;
+    ptr.vy *= 0.85;
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
 async function init() {
   setupEventListeners();
   setViewMode(state.viewMode);
+  initHeroDotFieldCanvas();
   refreshTpuStatus();
 
   try {

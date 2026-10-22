@@ -1,6 +1,6 @@
 # TorchTPU & JAX Interactive Learning Lab
 
-Self-paced technical training platform and live Cloud TPU code runner for PyTorch (`torch_tpu`), JAX, XLA compilation, XProf hardware profiling, and Pallas custom kernels.
+Self-paced technical training platform and live Cloud TPU code runner for PyTorch (`torch_tpu` 0.2.0+ Open Source release), JAX, XLA compilation, XProf hardware profiling, and Pallas custom kernels.
 
 ## Quick Start
 
@@ -16,4 +16,4 @@ All scripts explicitly pass `--project=torchtpu-learning-lab` and never modify y
 
 * `scripts/bootstrap_project.sh`: Enables `compute.googleapis.com` and `tpu.googleapis.com`, configures the `tpu-lab-vpc` network and IAP/SSH firewall rule, and checks Spot TPU quota (`v6e` and `v5p`).
 * `scripts/provision_spot_tpu.sh`: Requests or manages a Spot Cloud TPU VM (`v6e-1`, `v6e-4`, or `v5p-8`) via Cloud TPU Queued Resources (`--spot`).
-* `scripts/install_tpu_runtime.sh`: Downloads `torch_tpu` wheels locally on Cloudtop into `.wheelhouse/` using your corporate Artifact Registry access, copies `.wheelhouse/` to the Argolis TPU VM via `gcloud compute tpus tpu-vm scp`, and installs Python 3.12, `torch`, `torch_tpu`, and `jax[tpu]` offline on the TPU VM.
+* `scripts/install_tpu_runtime.sh`: Installs Python 3.12, public PyPI `torch_tpu==0.2.0` (`pip install torch_tpu==0.2.0 --extra-index-url https://download.pytorch.org/whl/cpu`), and `jax[tpu]` directly on the TPU VM inside `~/tpu-env` (or pass `--from-wheelhouse` as the 3rd argument to install custom Bazel-built wheels from `.wheelhouse/`).
